@@ -13,7 +13,9 @@ export function initConfig(socket, state) {
   const humHighInput = document.getElementById('config-hum-high');
   const buzzerCheck = document.getElementById('config-buzzer-enabled');
   const redLightCheck = document.getElementById('config-red-light-enabled');
+  const redLedFlashSpeedInput = document.getElementById('config-red-led-flash-speed');
   const pullIntervalInput = document.getElementById('config-pull-interval');
+  const sendIntervalInput = document.getElementById('config-send-interval');
   const saveBtn = document.getElementById('config-save');
   const msgEl = document.getElementById('config-msg');
   const appliedInfoEl = document.getElementById('config-applied-info');
@@ -56,9 +58,13 @@ export function initConfig(socket, state) {
 
     buzzerCheck.checked = Number(j.buzzer_enabled) === 1;
     redLightCheck.checked = Number(j.red_light_enabled) === 1;
+    redLedFlashSpeedInput.value = j.red_led_flash_speed_ms || 200;
 
     const pullSec = Number(j.config_pull_interval_sec) || 30;
     pullIntervalInput.value = pullSec;
+    
+    const sendSec = Number(j.send_interval_sec) || 1;
+    sendIntervalInput.value = sendSec;
 
     updateAppliedInfo(pullSec, j.updated_at);
   }
@@ -84,6 +90,8 @@ export function initConfig(socket, state) {
     if (!uid) return;
 
     const pullSec = Math.min(600, Math.max(5, Number(pullIntervalInput.value) || 30));
+    const sendSec = Math.min(60, Math.max(1, Number(sendIntervalInput.value) || 1));
+    const redLedFlashSpeed = Math.min(2000, Math.max(50, Number(redLedFlashSpeedInput.value) || 200));
 
     const body = {
       gas_threshold: Number(gasInput.value),
@@ -96,7 +104,9 @@ export function initConfig(socket, state) {
       humidity_high_threshold: Number(humHighInput.value),
       buzzer_enabled: buzzerCheck.checked ? 1 : 0,
       red_light_enabled: redLightCheck.checked ? 1 : 0,
-      config_pull_interval_sec: pullSec
+      red_led_flash_speed_ms: redLedFlashSpeed,
+      config_pull_interval_sec: pullSec,
+      send_interval_sec: sendSec
     };
 
     msgEl.textContent = 'Saving...';

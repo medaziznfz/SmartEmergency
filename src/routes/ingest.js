@@ -29,7 +29,7 @@ export function makeIngestRouter({ db, io }) {
     const [rows] = await db.query(
       `SELECT gas_threshold, gas_enabled, temp_threshold, temp_enabled, flame_enabled,
               humidity_low_threshold, humidity_high_threshold, humidity_enabled,
-              buzzer_enabled, red_light_enabled, config_pull_interval_sec
+              buzzer_enabled, red_light_enabled, red_led_flash_speed_ms, config_pull_interval_sec, send_interval_sec
        FROM thresholds WHERE device_id=? LIMIT 1`,
       [deviceId]
     );
@@ -47,15 +47,18 @@ export function makeIngestRouter({ db, io }) {
         humidity_enabled: Number(r.humidity_enabled),
         buzzer_enabled: Number(r.buzzer_enabled ?? 1),
         red_light_enabled: Number(r.red_light_enabled ?? 1),
-        config_pull_interval_sec: Number(r.config_pull_interval_sec ?? 30)
+        red_led_flash_speed_ms: Number(r.red_led_flash_speed_ms ?? 200),
+        config_pull_interval_sec: Number(r.config_pull_interval_sec ?? 30),
+        send_interval_sec: Number(r.send_interval_sec ?? 1)
       };
     }
 
     await db.query(
       `INSERT INTO thresholds
        (device_id, gas_threshold, gas_enabled, temp_threshold, temp_enabled, flame_enabled,
-        humidity_low_threshold, humidity_high_threshold, humidity_enabled, buzzer_enabled, red_light_enabled, config_pull_interval_sec)
-       VALUES (?, 400, 1, 60.00, 1, 1, 20.00, 80.00, 0, 1, 1, 30)`,
+        humidity_low_threshold, humidity_high_threshold, humidity_enabled, buzzer_enabled, red_light_enabled, 
+        red_led_flash_speed_ms, config_pull_interval_sec, send_interval_sec)
+       VALUES (?, 400, 1, 60.00, 1, 1, 20.00, 80.00, 0, 1, 1, 200, 30, 1)`,
       [deviceId]
     );
 
@@ -70,7 +73,9 @@ export function makeIngestRouter({ db, io }) {
       humidity_enabled: 0,
       buzzer_enabled: 1,
       red_light_enabled: 1,
-      config_pull_interval_sec: 30
+      red_led_flash_speed_ms: 200,
+      config_pull_interval_sec: 30,
+      send_interval_sec: 1
     };
   }
 
@@ -152,7 +157,9 @@ export function makeIngestRouter({ db, io }) {
         humidity_enabled: Number(th.humidity_enabled),
         buzzer_enabled: Number(th.buzzer_enabled),
         red_light_enabled: Number(th.red_light_enabled),
-        config_pull_interval_sec: Number(th.config_pull_interval_sec ?? 30)
+        red_led_flash_speed_ms: Number(th.red_led_flash_speed_ms),
+        config_pull_interval_sec: Number(th.config_pull_interval_sec ?? 30),
+        send_interval_sec: Number(th.send_interval_sec ?? 1)
       });
     } catch (e) {
       console.error('device-config error:', e);
@@ -278,7 +285,9 @@ export function makeIngestRouter({ db, io }) {
           humidity_enabled: Number(th.humidity_enabled),
           buzzer_enabled: Number(th.buzzer_enabled),
           red_light_enabled: Number(th.red_light_enabled),
-          config_pull_interval_sec: Number(th.config_pull_interval_sec ?? 30)
+          red_led_flash_speed_ms: Number(th.red_led_flash_speed_ms),
+          config_pull_interval_sec: Number(th.config_pull_interval_sec ?? 30),
+          send_interval_sec: Number(th.send_interval_sec ?? 1)
         },
         rssi: Number.isFinite(rssi) ? rssi : null,
         ip,

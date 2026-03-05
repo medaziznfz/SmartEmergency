@@ -19,7 +19,7 @@ export function makeApiRouter({ db }) {
     const [rows] = await db.query(
       `SELECT gas_threshold, gas_enabled, temp_threshold, temp_enabled, flame_enabled,
               humidity_low_threshold, humidity_high_threshold, humidity_enabled,
-              buzzer_enabled, red_light_enabled, config_pull_interval_sec, updated_at
+              buzzer_enabled, red_light_enabled, red_led_flash_speed_ms, config_pull_interval_sec, send_interval_sec, updated_at
        FROM thresholds WHERE device_id=? LIMIT 1`,
       [deviceId]
     );
@@ -37,7 +37,9 @@ export function makeApiRouter({ db }) {
         humidity_enabled: r.humidity_enabled,
         buzzer_enabled: r.buzzer_enabled ?? 1,
         red_light_enabled: r.red_light_enabled ?? 1,
+        red_led_flash_speed_ms: r.red_led_flash_speed_ms ?? 200,
         config_pull_interval_sec: r.config_pull_interval_sec,
+        send_interval_sec: r.send_interval_sec ?? 1,
         updated_at: r.updated_at
       };
     }
@@ -45,8 +47,9 @@ export function makeApiRouter({ db }) {
     await db.query(
       `INSERT INTO thresholds
        (device_id, gas_threshold, gas_enabled, temp_threshold, temp_enabled, flame_enabled,
-        humidity_low_threshold, humidity_high_threshold, humidity_enabled, buzzer_enabled, red_light_enabled, config_pull_interval_sec)
-       VALUES (?, 400, 1, 60.00, 1, 1, 20.00, 80.00, 0, 1, 1, 30)`,
+        humidity_low_threshold, humidity_high_threshold, humidity_enabled, buzzer_enabled, red_light_enabled, 
+        red_led_flash_speed_ms, config_pull_interval_sec, send_interval_sec)
+       VALUES (?, 400, 1, 60.00, 1, 1, 20.00, 80.00, 0, 1, 1, 200, 30, 1)`,
       [deviceId]
     );
 
@@ -61,7 +64,9 @@ export function makeApiRouter({ db }) {
       humidity_enabled: 0,
       buzzer_enabled: 1,
       red_light_enabled: 1,
+      red_led_flash_speed_ms: 200,
       config_pull_interval_sec: 30,
+      send_interval_sec: 1,
       updated_at: new Date()
     };
   }
@@ -154,7 +159,9 @@ export function makeApiRouter({ db }) {
       humidity_enabled: Number(th.humidity_enabled),
       buzzer_enabled: Number(th.buzzer_enabled),
       red_light_enabled: Number(th.red_light_enabled),
+      red_led_flash_speed_ms: Number(th.red_led_flash_speed_ms),
       config_pull_interval_sec: Number(th.config_pull_interval_sec),
+      send_interval_sec: Number(th.send_interval_sec),
       updated_at: th.updated_at
     });
   });
@@ -174,9 +181,17 @@ export function makeApiRouter({ db }) {
     const redLightEnabled = Number(req.body?.red_light_enabled) === 1 ? 1 : 0;
     const humLow = Number(req.body?.humidity_low_threshold);
     const humHigh = Number(req.body?.humidity_high_threshold);
+    const redLedFlashSpeed = Math.min(2000, Math.max(50, Number(req.body?.red_led_flash_speed_ms) || 200));
     const pullInterval = Number(req.body?.config_pull_interval_sec);
+    const sendInterval = Math.min(60, Math.max(1, Number(req.body?.send_interval_sec) || 1));
     if (!Number.isFinite(pullInterval) || pullInterval < 5 || pullInterval > 600) {
       return res.status(400).json({ ok: false, error: 'config_pull_interval_sec must be 5..600' });
+    }
+    if (!Number.isFinite(sendInterval) || sendInterval < 1 || sendInterval > 60) {
+      return res.status(400).json({ ok: false, error: 'send_interval_sec must be 1..60' });
+    }
+    if (!Number.isFinite(redLedFlashSpeed) || redLedFlashSpeed < 50 || redLedFlashSpeed > 2000) {
+      return res.status(400).json({ ok: false, error: 'red_led_flash_speed_ms must be 50..2000' });
     }
 
     if (!Number.isFinite(gas) || gas < 0 || gas > 1023) {
@@ -201,9 +216,11 @@ export function makeApiRouter({ db }) {
       `UPDATE thresholds
        SET gas_threshold=?, gas_enabled=?, temp_threshold=?, temp_enabled=?, flame_enabled=?,
            humidity_low_threshold=?, humidity_high_threshold=?, humidity_enabled=?,
-           buzzer_enabled=?, red_light_enabled=?, config_pull_interval_sec=?
+           buzzer_enabled=?, red_light_enabled=?, red_led_flash_speed_ms=?, 
+           config_pull_interval_sec=?, send_interval_sec=?
        WHERE device_id=?`,
-      [gas, gasEnabled, temp, tempEnabled, flameEnabled, humLow, humHigh, humEnabled, buzzerEnabled, redLightEnabled, pullInterval, dev.id]
+      [gas, gasEnabled, temp, tempEnabled, flameEnabled, humLow, humHigh, humEnabled, 
+       buzzerEnabled, redLightEnabled, redLedFlashSpeed, pullInterval, sendInterval, dev.id]
     );
 
     res.json({ ok: true });

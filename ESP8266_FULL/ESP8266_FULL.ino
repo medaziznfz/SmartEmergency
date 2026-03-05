@@ -40,9 +40,9 @@ unsigned long prevSendMillis = 0;
 unsigned long prevRedMillis  = 0;
 unsigned long prevCfgMillis  = 0;
 
-const unsigned long sendInterval   = 1000;
-const unsigned long redFlashSpeed  = 200;
-unsigned long configIntervalMs    = 30000;  // from server (config_pull_interval_sec * 1000)
+unsigned long sendIntervalMs   = 1000;  // from server (send_interval_sec * 1000)
+unsigned long redFlashSpeedMs  = 200;   // from server (red_led_flash_speed_ms)
+unsigned long configIntervalMs = 30000; // from server (config_pull_interval_sec * 1000)
 
 // ================= Thresholds (from web) =================
 int   GAS_THRESHOLD  = 400;
@@ -114,7 +114,10 @@ void wifiConnect() {
 
 // GET /api/device-config/:uid?label=room1
 void fetchConfig() {
-  if (WiFi.status() != WL_CONNECTED) return;
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("CFG: WiFi not connected, using default config");
+    return;
+  }
 
   WiFiClient wifiClient;
   HTTPClient http;
@@ -123,7 +126,7 @@ void fetchConfig() {
 
   http.setTimeout(2500);
   if (!http.begin(wifiClient, url)) {
-    Serial.println("CFG: http.begin failed");
+    Serial.println("CFG: http.begin failed, using default config");
     return;
   }
 
@@ -137,6 +140,7 @@ void fetchConfig() {
     DeserializationError err = deserializeJson(doc, payload);
 
     if (!err && doc["ok"] == true) {
+      // Update all config from server when connected
       GAS_THRESHOLD  = doc["gas_threshold"]  | GAS_THRESHOLD;
       GAS_ENABLED    = ((doc["gas_enabled"]    | 1) == 1);
       TEMP_THRESHOLD = doc["temp_threshold"] | TEMP_THRESHOLD;
@@ -155,17 +159,29 @@ void fetchConfig() {
       if (pullSec > 600) pullSec = 600;
       configIntervalMs = (unsigned long)pullSec * 1000;
 
-      Serial.printf("CFG OK => gas=%d(%s) temp=%.1f(%s) flame=%d hum[%.1f..%.1f](%s) buzzer=%s redLight=%s pull=%lus\n",
+      int sendSec = doc["send_interval_sec"] | 1;
+      if (sendSec < 1) sendSec = 1;
+      if (sendSec > 60) sendSec = 60;
+      sendIntervalMs = (unsigned long)sendSec * 1000;
+
+      int flashMs = doc["red_led_flash_speed_ms"] | 200;
+      if (flashMs < 50) flashMs = 50;
+      if (flashMs > 2000) flashMs = 2000;
+      redFlashSpeedMs = (unsigned long)flashMs;
+
+      Serial.printf("CFG OK => gas=%d(%s) temp=%.1f(%s) flame=%d hum[%.1f..%.1f](%s) buzzer=%s redLight=%s pull=%lus send=%lus flash=%lums\n",
                     GAS_THRESHOLD, GAS_ENABLED ? "on" : "off",
                     TEMP_THRESHOLD, TEMP_ENABLED ? "on" : "off",
                     FLAME_ENABLED, HUM_LOW, HUM_HIGH, HUM_ENABLED ? "on" : "off",
                     BUZZER_ENABLED ? "on" : "off", RED_LIGHT_ENABLED ? "on" : "off",
-                    (unsigned long)(configIntervalMs / 1000));
+                    (unsigned long)(configIntervalMs / 1000), 
+                    (unsigned long)(sendIntervalMs / 1000),
+                    redFlashSpeedMs);
     } else {
-      Serial.println("CFG: parse/ok error");
+      Serial.println("CFG: parse/ok error, using default config");
     }
   } else {
-    Serial.printf("CFG HTTP code: %d\n", code);
+    Serial.printf("CFG HTTP code: %d, using default config\n", code);
   }
 
   http.end();
@@ -197,25 +213,18 @@ void checkSafety(unsigned long nowMs) {
 
   bool danger = gasHigh || tempHigh || humBad || flameBad;
 
-  // Note: Alarm state is now determined by server response
-  // ESP only handles local outputs based on server-confirmed alarm state
-  // This prevents fake alarms due to mismatched calculations
-
-  if (danger) {
-    if (!isAlarmActive) {
-      Serial.println("\n⚠️ Local danger detected - waiting for server confirmation...");
-      Serial.printf("Local triggers: flame=%d gas=%d temp=%d humidity=%d\n",
-                    flameBad, gasHigh, tempHigh, humBad);
-      // Don't set isAlarmActive here - wait for server confirmation
-    }
-  } else {
-    if (isAlarmActive) {
-      Serial.println("Local danger cleared - waiting for server confirmation...");
-      // Don't clear isAlarmActive here - wait for server confirmation
-    }
+  // ESP controls alarm state directly based on local sensor readings
+  if (danger && !isAlarmActive) {
+    Serial.println("\nALARM STARTED - Local detection!");
+    Serial.printf("Triggers: flame=%d gas=%d temp=%d humidity=%d\n",
+                  flameBad, gasHigh, tempHigh, humBad);
+    isAlarmActive = true;
+  } else if (!danger && isAlarmActive) {
+    Serial.println("Alarm cleared - Local detection");
+    isAlarmActive = false;
   }
 
-  // Control outputs based on server-confirmed alarm state only
+  // Control outputs based on local alarm state
   if (isAlarmActive) {
     if (BUZZER_ENABLED) {
       digitalWrite(BUZZER, HIGH);
@@ -224,11 +233,12 @@ void checkSafety(unsigned long nowMs) {
     }
 
     if (RED_LIGHT_ENABLED) {
-      if (nowMs - prevRedMillis >= redFlashSpeed) {
+      if (nowMs - prevRedMillis >= redFlashSpeedMs) {
         prevRedMillis = nowMs;
         redToggle = !redToggle;
         digitalWrite(RED_LED_1, redToggle);
         digitalWrite(RED_LED_2, !redToggle);
+        Serial.printf("LED toggle: %d (flash speed: %lums)\n", redToggle, redFlashSpeedMs);
       }
     } else {
       digitalWrite(RED_LED_1, LOW);
@@ -243,7 +253,7 @@ void checkSafety(unsigned long nowMs) {
 
 void sendSensorDataHTTP() {
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("WiFi disconnected, reconnecting...");
+    Serial.println("WiFi disconnected, trying to reconnect...");
     WiFi.reconnect();
     return;
   }
@@ -258,7 +268,7 @@ void sendSensorDataHTTP() {
   json += "\"t\":" + String(lastT, 1) + ",";
   json += "\"g\":" + String(lastGas) + ",";
   json += "\"f\":" + String(lastFlame) + ",";
-  json += "\"alarm\":" + String(isAlarmActive ? 1 : 0) + ",";  // Send current state for reference
+  json += "\"alarm\":" + String(isAlarmActive ? 1 : 0) + ",";
   json += "\"rssi\":" + String(WiFi.RSSI());
   json += "}";
 
@@ -282,23 +292,25 @@ void sendSensorDataHTTP() {
   if (code > 0) {
     Serial.printf("POST code: %d\n", code);
     
-    // Read server response to get confirmed alarm state
+    // Try to read server response but don't depend on it for alarm state
     String response = http.getString();
     Serial.printf("Server response: %s\n", response.substring(0, 100));
     
-    // Parse JSON response to get server-confirmed alarm state
-    StaticJsonDocument<256> doc;
+    // Parse response to get updated config, but ignore alarm state from server
+    StaticJsonDocument<512> doc;
     DeserializationError err = deserializeJson(doc, response);
     
     if (!err && doc["ok"] == true) {
-      bool serverAlarm = doc["alarm"] | false;
-      if (serverAlarm != isAlarmActive) {
-        isAlarmActive = serverAlarm;
-        Serial.printf("🔥 Alarm state updated by server: %s\n", isAlarmActive ? "ACTIVE" : "SAFE");
+      // Update config if server sends new thresholds
+      if (doc.containsKey("gas_threshold")) {
+        Serial.println("Received updated config from server");
+        // Note: We could update config here, but ESP works independently
       }
+    } else {
+      Serial.printf("Server response error (ESP continues working independently): %s\n", err.c_str());
     }
   } else {
-    Serial.printf("POST failed: %s\n", http.errorToString(code).c_str());
+    Serial.printf("Server POST failed (ESP continues working independently): %s\n", http.errorToString(code).c_str());
   }
 
   http.end();
@@ -314,9 +326,16 @@ void setup() {
   pinMode(BUZZER, OUTPUT);
   pinMode(FLAME_PIN, INPUT);
 
-  digitalWrite(GREEN_LED, LOW);
+  // Test red LEDs at startup
+  Serial.println("Testing red LEDs...");
+  digitalWrite(RED_LED_1, HIGH);
+  digitalWrite(RED_LED_2, HIGH);
+  delay(500);
   digitalWrite(RED_LED_1, LOW);
   digitalWrite(RED_LED_2, LOW);
+  Serial.println("Red LED test completed");
+
+  digitalWrite(GREEN_LED, LOW);
   digitalWrite(BUZZER, LOW);
 
   dht.begin();
@@ -332,6 +351,22 @@ void setup() {
 
   fetchConfig();   // pull thresholds once
   readSensors();   // initial values
+
+  // Test red LED flashing with current settings
+  Serial.println("Testing red LED flashing...");
+  Serial.printf("Flash speed: %lums, Red light enabled: %s\n", redFlashSpeedMs, RED_LIGHT_ENABLED ? "YES" : "NO");
+  
+  for (int i = 0; i < 5; i++) {
+    digitalWrite(RED_LED_1, HIGH);
+    digitalWrite(RED_LED_2, LOW);
+    delay(redFlashSpeedMs);
+    digitalWrite(RED_LED_1, LOW);
+    digitalWrite(RED_LED_2, HIGH);
+    delay(redFlashSpeedMs);
+  }
+  digitalWrite(RED_LED_1, LOW);
+  digitalWrite(RED_LED_2, LOW);
+  Serial.println("Red LED flash test completed");
 }
 
 void loop() {
@@ -342,7 +377,7 @@ void loop() {
     fetchConfig();
   }
 
-  if (nowMs - prevSendMillis >= sendInterval) {
+  if (nowMs - prevSendMillis >= sendIntervalMs) {
     prevSendMillis = nowMs;
 
     digitalWrite(GREEN_LED, !digitalRead(GREEN_LED)); // heartbeat

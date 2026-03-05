@@ -31,7 +31,9 @@ CREATE TABLE IF NOT EXISTS thresholds (
 
   buzzer_enabled TINYINT NOT NULL DEFAULT 1,
   red_light_enabled TINYINT NOT NULL DEFAULT 1,
+  red_led_flash_speed_ms INT NOT NULL DEFAULT 200,
   config_pull_interval_sec INT NOT NULL DEFAULT 30,
+  send_interval_sec INT NOT NULL DEFAULT 1,
 
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE
