@@ -9,6 +9,7 @@ import {
   tempToPercent,
   humidityToPercent
 } from './utils.js';
+import PredictionDisplay from './prediction.js';
 
 const GAUGE_TEMP_COLOR = '#ea580c';
 const GAUGE_HUM_COLOR = '#0891b2';
@@ -19,6 +20,7 @@ export function initDashboard(socket, state) {
   const devicesEl = document.getElementById('dashboard-devices');
   const deviceSelect = document.getElementById('dashboard-device-select');
   const alarmBadge = document.getElementById('dashboard-alarm-badge');
+  const predictionDisplay = new PredictionDisplay();
   const ctx = document.getElementById('dashboard-chart');
 
   const chart = new Chart(ctx, {
@@ -78,7 +80,7 @@ export function initDashboard(socket, state) {
 
     return `
     <div class="col-12 col-md-6 col-xl-4" id="card-${r.uid}">
-      <div class="card device-widget h-100 ${alarm ? 'alarm-on alarm-blinking' : ''}">
+      <div class="card device-widget h-100 ${alarm ? 'alarm-on alarm-blinking' : ''}" data-device-uid="${r.uid}">
         <div class="card-body">
           <div class="d-flex justify-content-between align-items-start mb-3">
             <div>
@@ -112,6 +114,55 @@ export function initDashboard(socket, state) {
             </div>
           </div>
 
+          <!-- Predictive Alarm Section -->
+          <div class="prediction-section mt-3" id="prediction-${r.uid}">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+              <span class="prediction-title small fw-bold">Predictive Analysis</span>
+              <span class="prediction-confidence badge bg-secondary small" id="confidence-${r.uid}">--%</span>
+            </div>
+            <div class="prediction-risk mb-2">
+              <div class="d-flex justify-content-between align-items-center">
+                <span class="risk-label small">Risk Level:</span>
+                <span class="risk-badge badge small" id="risk-badge-${r.uid}">MINIMAL</span>
+              </div>
+              <div class="progress mt-1" style="height: 4px;">
+                <div class="progress-bar risk-progress" id="risk-progress-${r.uid}" style="width: 0%"></div>
+              </div>
+            </div>
+            <div class="prediction-time mb-2" id="time-to-alarm-${r.uid}">
+              <span class="time-label small text-muted">Time to alarm: --</span>
+            </div>
+            <div class="prediction-probabilities row g-2 mb-2">
+              <div class="col-6">
+                <div class="prob-item d-flex justify-content-between">
+                  <span class="prob-label small text-muted">Gas:</span>
+                  <span class="prob-value small fw-bold" id="prob-gas-${r.uid}">0%</span>
+                </div>
+              </div>
+              <div class="col-6">
+                <div class="prob-item d-flex justify-content-between">
+                  <span class="prob-label small text-muted">Temp:</span>
+                  <span class="prob-value small fw-bold" id="prob-temp-${r.uid}">0%</span>
+                </div>
+              </div>
+              <div class="col-6">
+                <div class="prob-item d-flex justify-content-between">
+                  <span class="prob-label small text-muted">Hum:</span>
+                  <span class="prob-value small fw-bold" id="prob-hum-${r.uid}">0%</span>
+                </div>
+              </div>
+              <div class="col-6">
+                <div class="prob-item d-flex justify-content-between">
+                  <span class="prob-label small text-muted">Flame:</span>
+                  <span class="prob-value small fw-bold" id="prob-flame-${r.uid}">0%</span>
+                </div>
+              </div>
+            </div>
+            <div class="prediction-recommendations" id="recommendations-${r.uid}">
+              <!-- Recommendations will be inserted here -->
+            </div>
+          </div>
+
           <div class="device-widget-footer mt-3 pt-2">
             <div class="d-flex align-items-center gap-2 flex-wrap">
               <span class="flame-badge ${flameDetected ? 'flame-danger' : 'flame-ok'}">Flame: ${flameDetected ? 'DETECTED' : 'OK'}</span>
@@ -130,6 +181,13 @@ export function initDashboard(socket, state) {
       .sort((a, b) => (b.ts || '').localeCompare(a.ts || ''))
       .map(renderDeviceCard)
       .join('');
+    
+    // Re-apply predictions after cards are refreshed
+    [...state.deviceState.values()].forEach(device => {
+      if (device.prediction) {
+        predictionDisplay.updatePrediction(device.uid, device.prediction);
+      }
+    });
   }
 
   function pushSeries(uid, r) {
@@ -188,6 +246,17 @@ export function initDashboard(socket, state) {
   socket.on('reading', (r) => {
     state.deviceState.set(r.uid, r);
     pushSeries(r.uid, r);
+    
+    // Update prediction display if available
+    if (r.prediction) {
+      predictionDisplay.updatePrediction(r.uid, r.prediction);
+      
+      // Animate high risk predictions
+      if (r.prediction.riskLevel === 'HIGH' || r.prediction.riskLevel === 'CRITICAL') {
+        predictionDisplay.pulseHighRisk(r.uid);
+      }
+    }
+    
     refreshCards();
     rebuildDeviceSelect();
     if (deviceSelect.value === r.uid) {

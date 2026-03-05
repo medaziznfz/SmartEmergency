@@ -4,11 +4,11 @@
 #include "DHT.h"
 
 // ================= WiFi =================
-const char* ssid     = "OrangeWifi-6B40";
-const char* password = "qKQf94xNuaZy";
+const char* ssid     = "LanaRhoads";
+const char* password = "lanaXrhoads";
 
 // ================= Server =================
-const char* serverBase = "http://192.168.1.10:3000";
+const char* serverBase = "http://10.42.0.55:3000";
 const char* apiKey     = "CHANGE_ME_TO_SOMETHING_SECRET";
 
 // Change label per device (room1, room2, kitchen...)
@@ -17,8 +17,8 @@ const String deviceLabel = "room1";
 // ================= Static IP (optional) =================
 #define USE_STATIC_IP 1
 #if USE_STATIC_IP
-IPAddress local_IP(192, 168, 1, 100);   // change per device (.101 .102 ...)
-IPAddress gateway(192, 168, 1, 1);
+IPAddress local_IP(10, 42, 0, 100);   // change per device (.101 .102 ...)
+IPAddress gateway(10, 42, 0, 1);
 IPAddress subnet(255, 255, 255, 0);
 #endif
 

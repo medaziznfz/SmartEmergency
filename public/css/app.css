@@ -133,6 +133,87 @@ body {
 .badge-alarm { background: rgba(220, 53, 69, 0.15); color: #dc3545; }
 .dashboard-realtime-row { align-items: stretch; }
 
+/* Predictive Alarm Styles */
+.prediction-section {
+  background: rgba(248, 249, 250, 0.8);
+  border-radius: 8px;
+  padding: 12px;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+}
+.prediction-title {
+  color: #495057;
+  font-weight: 600;
+}
+.prediction-confidence {
+  font-size: 0.7rem;
+}
+.risk-label {
+  color: #6c757d;
+  font-weight: 500;
+}
+.risk-badge {
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+.risk-progress {
+  transition: width 0.3s ease, background-color 0.3s ease;
+}
+.time-label {
+  font-weight: 500;
+}
+.prob-label {
+  font-size: 0.7rem;
+  font-weight: 500;
+}
+.prob-value {
+  font-size: 0.7rem;
+  color: #495057;
+}
+.prediction-recommendations {
+  margin-top: 8px;
+}
+.recommendation-item {
+  font-size: 0.7rem;
+  padding: 4px 8px;
+  border-radius: 4px;
+  margin-bottom: 4px;
+  border-left: 3px solid;
+}
+.recommendation-urgent {
+  background: rgba(220, 53, 69, 0.1);
+  border-left-color: #dc3545;
+  color: #721c24;
+}
+.recommendation-high {
+  background: rgba(255, 193, 7, 0.1);
+  border-left-color: #ffc107;
+  color: #856404;
+}
+.recommendation-medium {
+  background: rgba(13, 110, 253, 0.1);
+  border-left-color: #0d6efd;
+  color: #084298;
+}
+.recommendation-low {
+  background: rgba(25, 135, 84, 0.1);
+  border-left-color: #198754;
+  color: #0f5132;
+}
+
+/* Risk Level Colors */
+.risk-MINIMAL { background: rgba(25, 135, 84, 0.15); color: #198754; }
+.risk-LOW { background: rgba(13, 110, 253, 0.15); color: #0d6efd; }
+.risk-MEDIUM { background: rgba(255, 193, 7, 0.15); color: #ffc107; }
+.risk-HIGH { background: rgba(253, 126, 20, 0.15); color: #fd7e14; }
+.risk-CRITICAL { background: rgba(220, 53, 69, 0.15); color: #dc3545; }
+
+/* Progress bar colors for risk levels */
+.risk-MINIMAL .risk-progress { background: #198754; }
+.risk-LOW .risk-progress { background: #0d6efd; }
+.risk-MEDIUM .risk-progress { background: #ffc107; }
+.risk-HIGH .risk-progress { background: #fd7e14; }
+.risk-CRITICAL .risk-progress { background: #dc3545; }
+
 /* Dashboard chart */
 .card-chart { min-height: 200px; }
 .form-select-dashboard { min-width: 240px; max-width: 320px; }

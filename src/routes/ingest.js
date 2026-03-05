@@ -1,4 +1,23 @@
 import express from 'express';
+const router = express.Router();
+import mysql from 'mysql2/promise';
+import PredictiveAlarmSystem from '../prediction/predictor.js';
+
+const db = mysql.createPool({
+  host: process.env.DB_HOST,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASS,
+  database: process.env.DB_NAME,
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0
+});
+
+// Initialize predictive system
+const predictor = new PredictiveAlarmSystem();
+
+// Store historical data for predictions (in-memory, could be moved to Redis)
+const deviceHistory = new Map();
 
 function parseJSONMaybe(x) {
   if (!x) return null;
@@ -267,6 +286,9 @@ export function makeIngestRouter({ db, io }) {
         await closeAlarmEvent(openEvent.id);
       }
 
+      // Generate predictive alarm analysis
+      const prediction = generatePrediction(deviceId, { h, t, g, f }, th);
+
       const payload = {
         uid,
         label,
@@ -274,6 +296,7 @@ export function makeIngestRouter({ db, io }) {
         alarm: alarmComputed,
         alarm_device: alarmDevice,
         triggers: triggersNow,
+        prediction, // Add prediction to payload
         thresholds: {
           gas_threshold: Number(th.gas_threshold),
           gas_enabled: Number(th.gas_enabled),
@@ -301,6 +324,31 @@ export function makeIngestRouter({ db, io }) {
       return res.status(500).json({ ok: false, error: 'Server error' });
     }
   });
+
+  // ========= Prediction Functions =========
+  function generatePrediction(deviceId, currentReading, thresholds) {
+    // Get or create device history
+    if (!deviceHistory.has(deviceId)) {
+      deviceHistory.set(deviceId, []);
+    }
+    const history = deviceHistory.get(deviceId);
+
+    // Add current reading to history
+    history.push({
+      ...currentReading,
+      ts: new Date().toISOString()
+    });
+
+    // Keep only last 20 readings for prediction
+    if (history.length > 20) {
+      history.shift();
+    }
+
+    // Generate prediction using the predictor
+    const prediction = predictor.generatePrediction(currentReading, history, thresholds);
+
+    return prediction;
+  }
 
   return router;
 }
