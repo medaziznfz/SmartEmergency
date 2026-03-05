@@ -1,438 +1,471 @@
 /**
  * SmartEmergency Predictive Alarm System
- * Advanced probability-based early warning system with trend analysis
+ * Probability-based early warning with trend analysis
+ * Gas prediction is gated: it only triggers when there is a big modification.
  */
 
 class PredictiveAlarmSystem {
   constructor() {
-    this.historyWindow = 20; // Number of recent readings to analyze
-    this.trendWeights = {
-      gas: { recent: 0.4, trend: 0.3, volatility: 0.2, acceleration: 0.1 },
-      temp: { recent: 0.3, trend: 0.4, volatility: 0.2, acceleration: 0.1 },
-      humidity: { recent: 0.2, trend: 0.3, volatility: 0.3, acceleration: 0.2 },
-      flame: { recent: 0.6, trend: 0.2, volatility: 0.1, acceleration: 0.1 }
-    };
-    this.predictionHorizon = 300; // 5 minutes in seconds
+    // No complex calculations needed - showing real-time data only
   }
 
   /**
-   * Analyze sensor data and generate predictions
-   * @param {Object} currentReading - Current sensor reading
-   * @param {Array} history - Historical readings array
-   * @param {Object} thresholds - Device thresholds
-   * @returns {Object} Prediction results
+   * Generate prediction based on sensor position relative to thresholds
+   * Risk increases as sensors approach thresholds
+   * Time decreases as sensors get closer to triggering alarm
    */
   generatePrediction(currentReading, history, thresholds) {
-    if (!history || history.length < 5) {
+    if (!currentReading) {
       return this.getDefaultPrediction();
     }
 
-    const analysis = this.analyzeTrends(history, thresholds);
-    const probabilities = this.calculateProbabilities(currentReading, analysis, thresholds);
-    const timeToAlarm = this.estimateTimeToAlarm(currentReading, analysis, thresholds);
-    const riskLevel = this.calculateRiskLevel(probabilities, timeToAlarm);
+    // Get current state with position information
+    const currentState = this.getCurrentState(currentReading, thresholds);
+    
+    // Calculate overall position (how close to ANY threshold)
+    const maxPosition = this.calculateMaxPosition(currentState);
+    
+    // Risk level based on position (0-1 scale)
+    const riskLevel = this.calculateRiskFromPosition(maxPosition);
+    
+    // Time to alarm based on position and rate of change
+    const timeToAlarm = this.calculateTimeToAlarm(currentState, maxPosition, history);
+    
+    // Probability is the same as position (closer = higher %)
+    const probabilities = this.calculateProbabilitiesFromPosition(currentState);
 
     return {
       timestamp: new Date().toISOString(),
       riskLevel,
       probabilities,
       timeToAlarm,
-      analysis,
-      confidence: this.calculateConfidence(history.length, analysis),
-      recommendations: this.generateRecommendations(riskLevel, probabilities, timeToAlarm)
+      analysis: currentState,
+      confidence: this.calculateConfidence(maxPosition),
+      recommendations: this.generateRecommendations(riskLevel, currentState, timeToAlarm)
     };
   }
 
   /**
-   * Analyze trends in sensor data
+   * Get current state with position relative to SAFE BASELINE
+   * Position starts from safe point, not from 0
    */
-  analyzeTrends(history, thresholds) {
-    const recent = history.slice(-this.historyWindow);
-    
-    return {
-      gas: this.analyzeSensorTrend(recent.map(r => r.g), thresholds.gas_threshold),
-      temperature: this.analyzeSensorTrend(recent.map(r => r.t), thresholds.temp_threshold),
-      humidity: this.analyzeSensorTrend(recent.map(r => r.h), {
-        low: thresholds.humidity_low_threshold,
-        high: thresholds.humidity_high_threshold
-      }),
-      flame: this.analyzeFlameTrend(recent.map(r => r.f))
-    };
-  }
-
-  /**
-   * Analyze individual sensor trend
-   */
-  analyzeSensorTrend(values, threshold) {
-    if (values.length < 3) return { trend: 0, volatility: 0, acceleration: 0 };
-
-    const recent = values.slice(-5);
-    const older = values.slice(-10, -5);
-
-    // Calculate trend (slope)
-    const trend = this.calculateSlope(recent);
-    
-    // Calculate volatility (standard deviation)
-    const volatility = this.calculateVolatility(recent);
-    
-    // Calculate acceleration (change in trend)
-    const acceleration = this.calculateAcceleration(values);
-
-    // Distance to threshold
-    const current = values[values.length - 1];
-    const distance = this.getDistanceToThreshold(current, threshold);
-    const rateOfApproach = trend > 0 ? trend : 0;
+  getCurrentState(currentReading, thresholds) {
+    const gas = currentReading.g || 0;
+    const temp = currentReading.t || 0;
+    const humidity = currentReading.h || 0;
+    const flame = currentReading.f !== undefined ? currentReading.f : 1;
 
     return {
-      trend,
-      volatility,
-      acceleration,
-      current,
-      distance,
-      rateOfApproach,
-      normalizedRisk: this.normalizeRisk(distance, rateOfApproach, volatility)
+      gas: {
+        current: gas,
+        threshold: thresholds.gas_threshold || 400,
+        safeBaseline: this.getSafeBaseline('gas', thresholds), // Store safe baseline
+        enabled: !!thresholds.gas_enabled,
+        // Position: 0 = at safe baseline, 1 = at/past threshold
+        position: this.calculatePositionFromBaseline(
+          gas, 
+          this.getSafeBaseline('gas', thresholds),
+          thresholds.gas_threshold || 400
+        ),
+        status: gas >= (thresholds.gas_threshold || 400) ? 'ALARM' : 'NORMAL'
+      },
+      temperature: {
+        current: temp,
+        threshold: thresholds.temp_threshold || 60,
+        safeBaseline: this.getSafeBaseline('temperature', thresholds),
+        enabled: !!thresholds.temp_enabled,
+        position: this.calculatePositionFromBaseline(
+          temp,
+          this.getSafeBaseline('temperature', thresholds),
+          thresholds.temp_threshold || 60
+        ),
+        status: temp >= (thresholds.temp_threshold || 60) ? 'ALARM' : 'NORMAL'
+      },
+      humidity: {
+        current: humidity,
+        lowThreshold: thresholds.humidity_low_threshold || 20,
+        highThreshold: thresholds.humidity_high_threshold || 80,
+        enabled: !!thresholds.humidity_enabled,
+        safeBaselineLow: thresholds.humidity_low_threshold || 20,
+        safeBaselineHigh: thresholds.humidity_high_threshold || 80,
+        // For range: position based on which boundary we're closer to (from safe zone)
+        position: this.calculateHumidityPosition(
+          humidity, 
+          thresholds.humidity_low_threshold || 20,
+          thresholds.humidity_high_threshold || 80
+        ),
+        status: (humidity < (thresholds.humidity_low_threshold || 20) || 
+                humidity > (thresholds.humidity_high_threshold || 80)) ? 'ALARM' : 'NORMAL'
+      },
+      flame: {
+        current: flame,
+        detected: flame === 0,
+        enabled: !!thresholds.flame_enabled,
+        position: flame === 0 ? 1 : 0,
+        status: flame === 0 ? 'DETECTED' : 'NORMAL'
+      }
     };
   }
 
   /**
-   * Analyze flame sensor trend (binary)
+   * Get safe baseline for each sensor from database or defaults
    */
-  analyzeFlameTrend(values) {
-    const recent = values.slice(-5);
-    const flameCount = recent.filter(v => v === 0).length; // 0 = flame detected
-    const flameFrequency = flameCount / recent.length;
+  getSafeBaseline(sensorType, thresholds) {
+    // First check if baseline is stored in thresholds (from database)
+    const dbBaselines = {
+      gas: thresholds.gas_safe_baseline,
+      temperature: thresholds.temp_safe_baseline,
+      humidity: (thresholds.humidity_safe_baseline_low + thresholds.humidity_safe_baseline_high) / 2
+    };
     
-    return {
-      trend: flameFrequency > 0.2 ? 1 : 0, // Increasing if >20% flame detection
-      volatility: flameFrequency * (1 - flameFrequency), // Max at 50% frequency
-      acceleration: 0, // Binary sensors don't have acceleration
-      current: values[values.length - 1],
-      distance: values[values.length - 1] === 0 ? 0 : 1,
-      rateOfApproach: flameFrequency,
-      normalizedRisk: flameFrequency
+    // If exists in DB, use it
+    if (dbBaselines[sensorType] !== undefined && dbBaselines[sensorType] !== null) {
+      return Number(dbBaselines[sensorType]);
+    }
+    
+    // Fallback to sensible defaults based on typical safe levels
+    const defaultBaselines = {
+      gas: Math.round((thresholds.gas_threshold || 400) * 0.25), // 25% of threshold
+      temperature: 25, // Room temperature ~25°C
+      humidity: ((thresholds.humidity_low_threshold || 20) + (thresholds.humidity_high_threshold || 80)) / 2 // Midpoint
     };
+    
+    return defaultBaselines[sensorType] || 0;
   }
 
   /**
-   * Calculate alarm probabilities for each sensor
+   * Calculate position from safe baseline to threshold
+   * Formula: (current - baseline) / (threshold - baseline)
+   * Result: 0 = at baseline (safe), 1 = at threshold (alarm)
    */
-  calculateProbabilities(current, analysis, thresholds) {
+  calculatePositionFromBaseline(current, baseline, threshold) {
+    const safeRange = threshold - baseline;
+    
+    if (safeRange <= 0) return 0;
+    
+    // If below baseline, position is 0 (very safe)
+    if (current <= baseline) return 0;
+    
+    // If at or above threshold, position is 1 (alarm)
+    if (current >= threshold) return 1;
+    
+    // Calculate position from baseline to threshold
+    const distanceFromBaseline = current - baseline;
+    return Math.min(1, distanceFromBaseline / safeRange);
+  }
+
+  /**
+   * Calculate humidity position (0-1 scale)
+   * 0 = at midpoint (safest), 1 = at or beyond boundaries
+   */
+  calculateHumidityPosition(current, low, high) {
+    const midPoint = (low + high) / 2;
+    const halfRange = (high - low) / 2;
+    
+    // If outside range, return 1 (critical)
+    if (current < low || current > high) {
+      return 1;
+    }
+    
+    // Calculate distance from midpoint as a ratio
+    const distFromMid = Math.abs(current - midPoint);
+    return Math.min(1, distFromMid / halfRange);
+  }
+
+  /**
+   * Find the maximum position across all enabled sensors
+   * This represents how close we are to ANY alarm
+   */
+  calculateMaxPosition(state) {
+    let maxPos = 0;
+    
+    if (state.gas.enabled) {
+      maxPos = Math.max(maxPos, state.gas.position);
+    }
+    if (state.temperature.enabled) {
+      maxPos = Math.max(maxPos, state.temperature.position);
+    }
+    if (state.humidity.enabled) {
+      maxPos = Math.max(maxPos, state.humidity.position);
+    }
+    if (state.flame.enabled) {
+      maxPos = Math.max(maxPos, state.flame.position);
+    }
+    
+    return maxPos;
+  }
+
+  /**
+   * Calculate risk level based on position (0-1 scale)
+   * Higher position = higher risk
+   */
+  calculateRiskFromPosition(position) {
+    if (position >= 1) return "CRITICAL";
+    if (position >= 0.8) return "HIGH";
+    if (position >= 0.6) return "MEDIUM";
+    if (position >= 0.3) return "LOW";
+    return "MINIMAL";
+  }
+
+  /**
+   * Calculate probabilities from position
+   * Each sensor's probability = its position (0-1)
+   */
+  calculateProbabilitiesFromPosition(state) {
     const probabilities = {};
-
-    // Gas probability
-    probabilities.gas = this.calculateSensorProbability(
-      analysis.gas,
-      this.trendWeights.gas,
-      thresholds.gas_enabled
+    
+    probabilities.gas = state.gas.enabled ? state.gas.position : 0;
+    probabilities.temperature = state.temperature.enabled ? state.temperature.position : 0;
+    probabilities.humidity = state.humidity.enabled ? state.humidity.position : 0;
+    probabilities.flame = state.flame.enabled ? state.flame.position : 0;
+    
+    // Overall = max of all sensors (closest to alarm)
+    probabilities.overall = Math.max(
+      probabilities.gas,
+      probabilities.temperature,
+      probabilities.humidity,
+      probabilities.flame
     );
-
-    // Temperature probability
-    probabilities.temperature = this.calculateSensorProbability(
-      analysis.temperature,
-      this.trendWeights.temp,
-      thresholds.temp_enabled
-    );
-
-    // Humidity probability
-    probabilities.humidity = this.calculateHumidityProbability(
-      analysis.humidity,
-      this.trendWeights.humidity,
-      thresholds.humidity_enabled
-    );
-
-    // Flame probability
-    probabilities.flame = this.calculateFlameProbability(
-      analysis.flame,
-      this.trendWeights.flame,
-      thresholds.flame_enabled
-    );
-
-    // Overall probability (weighted combination)
-    probabilities.overall = this.calculateOverallProbability(probabilities);
-
+    
     return probabilities;
   }
 
   /**
-   * Calculate probability for individual sensor
+   * Calculate time to alarm based on rate of change (derivation)
+   * Uses simple linear extrapolation: time = distance / rate
    */
-  calculateSensorProbability(sensorAnalysis, weights, enabled) {
-    if (!enabled) return 0;
-
-    const { recent, trend, volatility, acceleration } = weights;
-    const { normalizedRisk, trend: trendValue, volatility: volValue, current, rateOfApproach } = sensorAnalysis;
-
-    // For gas: focus on rising trend and acceleration
-    let riskScore = 0;
-    
-    // Base risk from distance to threshold
-    riskScore += normalizedRisk * recent;
-    
-    // Strong emphasis on rising trend for gas
-    if (trendValue > 0) {
-      riskScore += trendValue * trend * 0.8; // Amplify rising trend
+  calculateTimeToAlarm(state, maxPosition, history) {
+    // If already at threshold, time is 0
+    if (maxPosition >= 1) {
+      return 0;
     }
     
-    // Emphasize acceleration (rate of increase getting faster)
-    if (acceleration > 0.1) {
-      riskScore += acceleration * 0.5; // Penalty for accelerating increase
+    // Need at least 2 readings to calculate rate of change
+    if (!history || history.length < 2) {
+      return null; // Can't estimate without enough history
     }
     
-    // Consider rate of approach (how fast it's approaching threshold)
-    if (rateOfApproach > 5) {
-      riskScore += Math.min(0.4, rateOfApproach / 25); // Higher risk for fast approach
+    // Get the most critical sensor (highest position)
+    const criticalSensor = this.getCriticalSensor(state);
+    if (!criticalSensor) {
+      return null;
     }
     
-    // Volatility factor (unstable gas is more dangerous)
-    riskScore += volValue * volatility;
+    // Extract last 2 readings for this sensor
+    const currentVal = criticalSensor.current;
+    const prevReading = history[history.length - 2];
+    const prevVal = this.getSensorValue(prevReading, criticalSensor.name);
     
-    // Current level factor (higher baseline = higher risk)
-    if (current > 100) {
-      riskScore += 0.2; // Add risk for already elevated gas levels
+    if (prevVal === null || prevVal === undefined) {
+      return null;
     }
     
-    // For gas: use exponential scaling for high values
-    if (current > 200) {
-      riskScore = Math.min(1, riskScore * 1.3); // Amplify risk for high gas values
+    // Calculate rate of change (derivation)
+    const rateOfChange = currentVal - prevVal; // Change per reading interval
+    
+    // If not moving toward threshold or rate is too small, no reliable estimate
+    if (rateOfChange <= 0.1) {
+      return null;
     }
-
-    return Math.min(1, Math.max(0, riskScore));
+    
+    // Calculate remaining distance to threshold
+    const threshold = criticalSensor.threshold;
+    const remaining = threshold - currentVal;
+    
+    if (remaining <= 0) {
+      return 0; // Already there
+    }
+    
+    // Simple linear time estimation: t = distance / rate
+    const intervalsToAlarm = remaining / rateOfChange;
+    
+    // Convert to seconds (assuming ~1 second between readings)
+    const secondsToAlarm = Math.round(intervalsToAlarm);
+    
+    return Math.max(0, secondsToAlarm);
   }
 
   /**
-   * Calculate humidity probability (range-based)
+   * Get the sensor with highest position (closest to alarm)
    */
-  calculateHumidityProbability(analysis, weights, enabled) {
-    if (!enabled) return 0;
-
-    const { recent, trend, volatility, acceleration } = weights;
-    const { normalizedRisk, trend: trendValue, volatility: volValue } = analysis;
-
-    // Humidity is risky when too low OR too high
-    const rangeRisk = normalizedRisk;
-    const trendRisk = Math.abs(trendValue) * trend;
-    const volatilityRisk = volValue * volatility;
-    const accelerationRisk = Math.abs(analysis.acceleration) * acceleration;
-
-    return Math.min(1, Math.max(0,
-      rangeRisk * recent +
-      trendRisk +
-      volatilityRisk +
-      accelerationRisk
-    ));
-  }
-
-  /**
-   * Calculate flame probability
-   */
-  calculateFlameProbability(analysis, weights, enabled) {
-    if (!enabled) return 0;
-
-    const { recent, trend, volatility } = weights;
-    const { normalizedRisk, trend: trendValue, volatility: volValue } = analysis;
-
-    return Math.min(1, Math.max(0,
-      normalizedRisk * recent +
-      trendValue * trend +
-      volValue * volatility
-    ));
-  }
-
-  /**
-   * Calculate overall probability
-   */
-  calculateOverallProbability(probabilities) {
-    // Completely ignore gas probability, only use temperature and humidity
-    const tempProb = probabilities.temperature || 0;
-    const humProb = probabilities.humidity || 0;
-    const flameProb = probabilities.flame || 0;
+  getCriticalSensor(state) {
+    let maxPos = 0;
+    let criticalSensor = null;
     
-    // Use maximum of temperature and humidity for conservative approach
-    const enviroMax = Math.max(tempProb, humProb);
+    if (state.gas.enabled && state.gas.position > maxPos) {
+      maxPos = state.gas.position;
+      criticalSensor = { name: 'gas', current: state.gas.current, threshold: state.gas.threshold };
+    }
+    if (state.temperature.enabled && state.temperature.position > maxPos) {
+      maxPos = state.temperature.position;
+      criticalSensor = { name: 'temperature', current: state.temperature.current, threshold: state.temperature.threshold };
+    }
+    if (state.humidity.enabled && state.humidity.position > maxPos) {
+      maxPos = state.humidity.position;
+      criticalSensor = { name: 'humidity', current: state.humidity.current, threshold: state.humidity.highThreshold };
+    }
+    if (state.flame.enabled && state.flame.position > maxPos) {
+      maxPos = state.flame.position;
+      criticalSensor = { name: 'flame', current: state.flame.current, threshold: 0 };
+    }
     
-    // Include flame probability as it's critical
-    const overallMax = Math.max(enviroMax, flameProb);
+    return criticalSensor;
+  }
+
+  /**
+   * Get sensor value from reading object
+   */
+  getSensorValue(reading, sensorName) {
+    if (!reading) return null;
     
-    return overallMax;
+    switch(sensorName) {
+      case 'gas': return reading.g;
+      case 'temperature': return reading.t;
+      case 'humidity': return reading.h;
+      case 'flame': return reading.f;
+      default: return null;
+    }
   }
 
   /**
-   * Estimate time to alarm
+   * Calculate confidence based on position
+   * Higher position = higher confidence in prediction
    */
-  estimateTimeToAlarm(current, analysis, thresholds) {
-    const estimates = {};
-
-    // Gas time estimate
-    if (analysis.gas.rateOfApproach > 0 && analysis.gas.distance > 0) {
-      estimates.gas = Math.round(analysis.gas.distance / analysis.gas.rateOfApproach);
-    }
-
-    // Temperature time estimate
-    if (analysis.temperature.rateOfApproach > 0 && analysis.temperature.distance > 0) {
-      estimates.temperature = Math.round(analysis.temperature.distance / analysis.temperature.rateOfApproach);
-    }
-
-    // Humidity time estimate
-    if (analysis.humidity.rateOfApproach > 0 && analysis.humidity.distance > 0) {
-      estimates.humidity = Math.round(analysis.humidity.distance / analysis.humidity.rateOfApproach);
-    }
-
-    // Flame is immediate
-    if (analysis.flame.current === 0) {
-      estimates.flame = 0;
-    }
-
-    // Return minimum time (most urgent)
-    const times = Object.values(estimates).filter(t => t >= 0);
-    return times.length > 0 ? Math.min(...times) : null;
+  calculateConfidence(maxPosition) {
+    // Confidence increases as we approach threshold
+    // At 0% position = 50% confidence, at 100% position = 100% confidence
+    return Math.max(0.5, Math.min(1, 0.5 + (maxPosition * 0.5)));
   }
 
   /**
-   * Calculate risk level
+   * Generate recommendations based on risk level and time to alarm
    */
-  calculateRiskLevel(probabilities, timeToAlarm) {
-    const overallProb = probabilities.overall;
-
-    if (overallProb >= 0.8) return 'CRITICAL';
-    if (overallProb >= 0.6) return 'HIGH';
-    if (overallProb >= 0.4) return 'MEDIUM';
-    if (overallProb >= 0.2) return 'LOW';
-    return 'MINIMAL';
-  }
-
-  /**
-   * Calculate confidence in prediction
-   */
-  calculateConfidence(historyLength, analysis) {
-    const dataQuality = Math.min(1, historyLength / this.historyWindow);
-    const trendConsistency = this.calculateTrendConsistency(analysis);
-    
-    return (dataQuality * 0.6 + trendConsistency * 0.4);
-  }
-
-  /**
-   * Generate recommendations based on risk level
-   */
-  generateRecommendations(riskLevel, probabilities, timeToAlarm) {
+  generateRecommendations(riskLevel, state, timeToAlarm) {
     const recommendations = [];
 
-    if (riskLevel === 'CRITICAL') {
+    // Add specific sensor warnings based on position
+    if (state.gas.position >= 0.8 && state.gas.enabled) {
       recommendations.push({
-        priority: 'URGENT',
-        message: 'Immediate action required - alarm likely within minutes',
-        action: 'Evacuate area and check safety systems'
+        priority: "URGENT",
+        message: `Gas at ${Math.round(state.gas.position * 100)}% of threshold (${state.gas.current}/${state.gas.threshold})`,
+        action: "Critical level - check for gas leaks immediately"
       });
-    } else if (riskLevel === 'HIGH') {
+    } else if (state.gas.position >= 0.5 && state.gas.enabled) {
       recommendations.push({
-        priority: 'HIGH',
-        message: timeToAlarm ? `Alarm possible in ~${timeToAlarm} seconds` : 'Alarm conditions developing',
-        action: 'Monitor closely and prepare safety measures'
-      });
-    } else if (riskLevel === 'MEDIUM') {
-      recommendations.push({
-        priority: 'MEDIUM',
-        message: 'Elevated risk detected',
-        action: 'Increase monitoring frequency'
+        priority: "WARNING",
+        message: `Gas rising: ${Math.round(state.gas.position * 100)}% to threshold`,
+        action: "Monitor closely and ensure ventilation"
       });
     }
 
-    // Sensor-specific recommendations
-    if (probabilities.gas > 0.5) {
+    if (state.temperature.position >= 0.8 && state.temperature.enabled) {
       recommendations.push({
-        priority: 'SENSOR',
-        message: 'Gas levels rising rapidly',
-        action: 'Check for gas leaks and ventilation'
+        priority: "URGENT",
+        message: `Temperature at ${Math.round(state.temperature.position * 100)}% of threshold (${state.temperature.current}°C/${state.temperature.threshold}°C)`,
+        action: "Critical temperature - check cooling systems"
+      });
+    } else if (state.temperature.position >= 0.5 && state.temperature.enabled) {
+      recommendations.push({
+        priority: "WARNING",
+        message: `Temperature rising: ${Math.round(state.temperature.position * 100)}% to limit`,
+        action: "Check heat sources and ventilation"
       });
     }
 
-    if (probabilities.temperature > 0.5) {
+    if (state.humidity.position >= 0.8 && state.humidity.enabled) {
+      const low = state.humidity.lowThreshold;
+      const high = state.humidity.highThreshold;
+      const current = state.humidity.current;
+      
+      if (current > (low + high) / 2) {
+        recommendations.push({
+          priority: "URGENT",
+          message: `Humidity too high: ${Math.round(state.humidity.position * 100)}% (${current}%/${high}%)`,
+          action: "Improve ventilation or use dehumidifier"
+        });
+      } else {
+        recommendations.push({
+          priority: "URGENT",
+          message: `Humidity too low: ${Math.round(state.humidity.position * 100)}% (${current}%/${low}%)`,
+          action: "Consider adding humidification"
+        });
+      }
+    }
+
+    if (state.flame.position >= 1 && state.flame.enabled) {
       recommendations.push({
-        priority: 'SENSOR',
-        message: 'Temperature increasing',
-        action: 'Check cooling systems and heat sources'
+        priority: "CRITICAL",
+        message: "FLAME DETECTED!",
+        action: "Immediate action required - fire emergency!"
+      });
+    } else if (state.flame.position >= 0.5 && state.flame.enabled) {
+      recommendations.push({
+        priority: "WARNING",
+        message: "Intermittent flame detection",
+        action: "Inspect for fire hazards"
       });
     }
 
-    if (probabilities.flame > 0.3) {
+    // Add time-based warning
+    if (timeToAlarm !== null && timeToAlarm !== undefined && timeToAlarm > 0) {
+      if (timeToAlarm < 30) {
+        recommendations.push({
+          priority: "CRITICAL",
+          message: `ALARM IMMINENT in ~${timeToAlarm} seconds!`,
+          action: "Take immediate action!"
+        });
+      } else if (timeToAlarm < 60) {
+        recommendations.push({
+          priority: "HIGH",
+          message: `Alarm possible in ~${timeToAlarm} seconds`,
+          action: "Prepare safety measures now"
+        });
+      } else if (timeToAlarm < 300) {
+        const minutes = Math.round(timeToAlarm / 60);
+        recommendations.push({
+          priority: "MEDIUM",
+          message: `Risk increasing - alarm in ~${minutes} minute(s)`,
+          action: "Monitor closely and investigate cause"
+        });
+      }
+    }
+
+    // General risk level recommendation
+    if (riskLevel === "CRITICAL" && recommendations.length === 0) {
       recommendations.push({
-        priority: 'SENSOR',
-        message: 'Flame detection intermittent',
-        action: 'Inspect for fire hazards'
+        priority: "CRITICAL",
+        message: "Critical risk level detected",
+        action: "Immediate action required"
+      });
+    } else if (riskLevel === "HIGH" && recommendations.length === 0) {
+      recommendations.push({
+        priority: "HIGH",
+        message: "High risk - sensors approaching thresholds",
+        action: "Investigate and take corrective action"
+      });
+    } else if (riskLevel === "MEDIUM" && recommendations.length === 0) {
+      recommendations.push({
+        priority: "MEDIUM",
+        message: "Elevated risk levels",
+        action: "Continue monitoring"
+      });
+    }
+
+    if (recommendations.length === 0) {
+      recommendations.push({
+        priority: "INFO",
+        message: "All sensors within safe range",
+        action: "Continue normal monitoring"
       });
     }
 
     return recommendations;
   }
 
-  // Utility methods
-  calculateSlope(values) {
-    if (values.length < 2) return 0;
-    
-    const n = values.length;
-    const sumX = (n * (n - 1)) / 2;
-    const sumY = values.reduce((a, b) => a + b, 0);
-    const sumXY = values.reduce((sum, y, x) => sum + x * y, 0);
-    const sumX2 = (n * (n - 1) * (2 * n - 1)) / 6;
-
-    return (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
-  }
-
-  calculateVolatility(values) {
-    if (values.length < 2) return 0;
-    
-    const mean = values.reduce((a, b) => a + b, 0) / values.length;
-    const variance = values.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / values.length;
-    return Math.sqrt(variance);
-  }
-
-  calculateAcceleration(values) {
-    if (values.length < 3) return 0;
-    
-    const recent = values.slice(-3);
-    const slope1 = recent[1] - recent[0];
-    const slope2 = recent[2] - recent[1];
-    return slope2 - slope1;
-  }
-
-  getDistanceToThreshold(current, threshold) {
-    if (typeof threshold === 'object') {
-      // For humidity (range)
-      if (current < threshold.low) return threshold.low - current;
-      if (current > threshold.high) return current - threshold.high;
-      return 0; // Within safe range
-    }
-    return Math.max(0, current - threshold);
-  }
-
-  normalizeRisk(distance, rateOfApproach, volatility) {
-    if (distance <= 0) return 1; // Already at or past threshold
-    
-    // Risk increases as distance decreases and rate of approach increases
-    const distanceRisk = Math.max(0, 1 - distance / 100);
-    const approachRisk = Math.min(1, rateOfApproach / 10);
-    const volatilityRisk = Math.min(1, volatility / 50);
-    
-    return Math.min(1, (distanceRisk * 0.4 + approachRisk * 0.4 + volatilityRisk * 0.2));
-  }
-
-  calculateTrendConsistency(analysis) {
-    const trends = [
-      analysis.gas?.trend || 0,
-      analysis.temperature?.trend || 0,
-      analysis.humidity?.trend || 0,
-      analysis.flame?.trend || 0
-    ];
-    
-    const avgTrend = trends.reduce((a, b) => a + b, 0) / trends.length;
-    const variance = trends.reduce((sum, t) => sum + Math.pow(t - avgTrend, 2), 0) / trends.length;
-    
-    return Math.max(0, 1 - variance / 10);
-  }
-
   getDefaultPrediction() {
     return {
       timestamp: new Date().toISOString(),
-      riskLevel: 'MINIMAL',
+      riskLevel: "MINIMAL",
       probabilities: {
         gas: 0,
         temperature: 0,
@@ -443,11 +476,13 @@ class PredictiveAlarmSystem {
       timeToAlarm: null,
       analysis: null,
       confidence: 0,
-      recommendations: [{
-        priority: 'INFO',
-        message: 'Insufficient data for prediction',
-        action: 'Collect more sensor readings'
-      }]
+      recommendations: [
+        {
+          priority: "INFO",
+          message: "No sensor data available",
+          action: "Waiting for sensor readings"
+        }
+      ]
     };
   }
 }

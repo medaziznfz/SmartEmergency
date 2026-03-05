@@ -70,12 +70,141 @@ float lastT = NAN;
 int lastGas = 0;
 int lastFlame = 1;
 
+// Calibration state
+bool calibrationComplete = false;
+
 // Unique ID
 String deviceUID;
 
 // ---------------- helpers ----------------
 String makeUrl(const String& path) {
   return String(serverBase) + path;
+}
+
+// ================= CALIBRATION FUNCTION =================
+void calibrateSensors() {
+  const int NUM_READINGS = 5;
+  
+  Serial.println("\n==== STARTING SENSOR CALIBRATION ====");
+  Serial.printf("Taking %d readings for baseline calibration...\n", NUM_READINGS);
+  
+  // Arrays to store readings
+  float gasReadings[NUM_READINGS];
+  float tempReadings[NUM_READINGS];
+  float humReadings[NUM_READINGS];
+  
+  // Take readings with 1 second intervals
+  for (int i = 0; i < NUM_READINGS; i++) {
+    Serial.printf("Reading %d/%d... ", i + 1, NUM_READINGS);
+    
+    // Read sensors
+    int gas = analogRead(MQ2_PIN);
+    float h = dht.readHumidity();
+    float t = dht.readTemperature();
+    
+    // Store readings
+    gasReadings[i] = gas;
+    tempReadings[i] = isnan(t) ? 25.0 : t;
+    humReadings[i] = isnan(h) ? 50.0 : h;
+    
+    Serial.printf("Gas=%d, Temp=%.1fC, Hum=%.1f%%\n", 
+                  gas, tempReadings[i], humReadings[i]);
+    
+    delay(1000);
+  }
+  
+  // Calculate averages (moyenne)
+  float sumGas = 0, sumTemp = 0, sumHum = 0;
+  for (int i = 0; i < NUM_READINGS; i++) {
+    sumGas += gasReadings[i];
+    sumTemp += tempReadings[i];
+    sumHum += humReadings[i];
+  }
+  
+  float avgGas = sumGas / NUM_READINGS;
+  float avgTemp = sumTemp / NUM_READINGS;
+  float avgHum = sumHum / NUM_READINGS;
+  
+  // Calculate humidity range (±10%)
+  float humLow = avgHum * 0.9;
+  float humHigh = avgHum * 1.1;
+  
+  Serial.println("\n==== CALIBRATION RESULTS ====");
+  Serial.printf("Average Gas: %.0f\n", avgGas);
+  Serial.printf("Average Temp: %.2fC\n", avgTemp);
+  Serial.printf("Average Humidity: %.2f%%\n", avgHum);
+  Serial.printf("Humidity Range: %.2f - %.2f%%\n", humLow, humHigh);
+  
+  // Send to server
+  sendCalibrationToServer(avgGas, avgTemp, humLow, humHigh);
+  
+  calibrationComplete = true;
+  Serial.println("\n==== CALIBRATION COMPLETE ====\n");
+}
+
+void sendCalibrationToServer(float gas, float temp, float humLow, float humHigh) {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("CAL: WiFi not connected, skipping calibration upload");
+    return;
+  }
+  
+  Serial.println("CAL: Sending calibration data to server...");
+  
+  WiFiClient wifiClient;
+  HTTPClient http;
+  
+  String url = makeUrl("/api/calibrate");
+  
+  http.setTimeout(3000);
+  if (!http.begin(wifiClient, url)) {
+    Serial.println("CAL: HTTP begin failed");
+    return;
+  }
+  
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("X-API-KEY", apiKey);
+  
+  // Build JSON using ArduinoJson library
+  StaticJsonDocument<512> doc;
+  doc["uid"] = deviceUID;
+  doc["label"] = deviceLabel;
+  
+  // Create array of 5 readings
+  JsonArray readings = doc.createNestedArray("readings");
+  
+  for (int i = 0; i < 5; i++) {
+    StaticJsonDocument<96> reading;
+    reading["g"] = (int)gas;
+    reading["t"] = temp;
+    
+    // Spread humidity values across the range
+    float humValue = humLow + (i * ((humHigh - humLow) / 4.0));
+    reading["h"] = humValue;
+    
+    readings.add(reading);
+  }
+  
+  // Serialize to string
+  String json;
+  serializeJson(doc, json);
+  
+  Serial.printf("CAL: Sending JSON (%d bytes)\n", json.length());
+  
+  int code = http.POST(json);
+  if (code == 200) {
+    String response = http.getString();
+    Serial.printf("CAL: Server response: %s\n", response);
+    Serial.println("CAL: Calibration saved successfully!");
+  } else if (code > 0) {
+    String errorBody = http.getString();
+    Serial.printf("CAL: Server error %d: %s\n", code, errorBody);
+    Serial.println("CAL: Failed to save calibration");
+  } else {
+    Serial.printf("CAL: HTTP error: %s\n", http.errorToString(code).c_str());
+    Serial.println("CAL: Failed to reach server");
+  }
+  
+  http.end();
 }
 
 void wifiConnect() {
@@ -349,7 +478,11 @@ void setup() {
   Serial.print("UID: ");
   Serial.println(deviceUID);
 
-  fetchConfig();   // pull thresholds once
+  // ================= CALIBRATION PHASE =================
+  calibrateSensors(); // Takes 5 readings and saves baseline to server
+  // =====================================================
+
+  fetchConfig();   // pull thresholds once (will include baselines if calibrated)
   readSensors();   // initial values
 
   // Test red LED flashing with current settings

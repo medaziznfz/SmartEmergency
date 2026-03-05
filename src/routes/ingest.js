@@ -16,9 +16,6 @@ const db = mysql.createPool({
 // Initialize predictive system
 const predictor = new PredictiveAlarmSystem();
 
-// Store historical data for predictions (in-memory, could be moved to Redis)
-const deviceHistory = new Map();
-
 function parseJSONMaybe(x) {
   if (!x) return null;
   if (typeof x === 'object') return x;
@@ -48,7 +45,8 @@ export function makeIngestRouter({ db, io }) {
     const [rows] = await db.query(
       `SELECT gas_threshold, gas_enabled, temp_threshold, temp_enabled, flame_enabled,
               humidity_low_threshold, humidity_high_threshold, humidity_enabled,
-              buzzer_enabled, red_light_enabled, red_led_flash_speed_ms, config_pull_interval_sec, send_interval_sec
+              buzzer_enabled, red_light_enabled, red_led_flash_speed_ms, config_pull_interval_sec, send_interval_sec,
+              gas_safe_baseline, temp_safe_baseline, humidity_safe_baseline_low, humidity_safe_baseline_high
        FROM thresholds WHERE device_id=? LIMIT 1`,
       [deviceId]
     );
@@ -68,7 +66,12 @@ export function makeIngestRouter({ db, io }) {
         red_light_enabled: Number(r.red_light_enabled ?? 1),
         red_led_flash_speed_ms: Number(r.red_led_flash_speed_ms ?? 200),
         config_pull_interval_sec: Number(r.config_pull_interval_sec ?? 30),
-        send_interval_sec: Number(r.send_interval_sec ?? 1)
+        send_interval_sec: Number(r.send_interval_sec ?? 1),
+        // Safe baselines for prediction
+        gas_safe_baseline: Number(r.gas_safe_baseline),
+        temp_safe_baseline: Number(r.temp_safe_baseline),
+        humidity_safe_baseline_low: Number(r.humidity_safe_baseline_low),
+        humidity_safe_baseline_high: Number(r.humidity_safe_baseline_high)
       };
     }
 
@@ -76,8 +79,9 @@ export function makeIngestRouter({ db, io }) {
       `INSERT INTO thresholds
        (device_id, gas_threshold, gas_enabled, temp_threshold, temp_enabled, flame_enabled,
         humidity_low_threshold, humidity_high_threshold, humidity_enabled, buzzer_enabled, red_light_enabled, 
-        red_led_flash_speed_ms, config_pull_interval_sec, send_interval_sec)
-       VALUES (?, 400, 1, 60.00, 1, 1, 20.00, 80.00, 0, 1, 1, 200, 30, 1)`,
+        red_led_flash_speed_ms, config_pull_interval_sec, send_interval_sec,
+        gas_safe_baseline, temp_safe_baseline, humidity_safe_baseline_low, humidity_safe_baseline_high)
+       VALUES (?, 400, 1, 60.00, 1, 1, 20.00, 80.00, 0, 1, 1, 200, 30, 1, 100, 25.00, 44.00, 56.00)`,
       [deviceId]
     );
 
@@ -94,7 +98,11 @@ export function makeIngestRouter({ db, io }) {
       red_light_enabled: 1,
       red_led_flash_speed_ms: 200,
       config_pull_interval_sec: 30,
-      send_interval_sec: 1
+      send_interval_sec: 1,
+      gas_safe_baseline: 100,
+      temp_safe_baseline: 25.0,
+      humidity_safe_baseline_low: 44.0,
+      humidity_safe_baseline_high: 56.0
     };
   }
 
@@ -286,7 +294,7 @@ export function makeIngestRouter({ db, io }) {
         await closeAlarmEvent(openEvent.id);
       }
 
-      // Generate predictive alarm analysis
+      // Generate predictive alarm analysis using recent history
       const prediction = generatePrediction(deviceId, { h, t, g, f }, th);
 
       const payload = {
@@ -325,7 +333,92 @@ export function makeIngestRouter({ db, io }) {
     }
   });
 
+  // ========= ESP Calibration: Submit baseline readings =========
+  router.post('/calibrate', async (req, res) => {
+    try {
+      const apiKey = req.header('X-API-KEY');
+      if (!apiKey || apiKey !== process.env.IOT_API_KEY) {
+        return res.status(401).json({ ok: false, error: 'Unauthorized' });
+      }
+
+      const b = req.body || {};
+      const uid = typeof b.uid === 'string' ? b.uid.trim() : '';
+      const label = typeof b.label === 'string' && b.label.trim() ? b.label.trim() : 'unknown';
+      
+      // Array of calibration readings (typically 5)
+      const readings = Array.isArray(b.readings) ? b.readings : [];
+      
+      if (!uid) return res.status(400).json({ ok: false, error: 'Invalid uid' });
+      if (readings.length < 3) {
+        return res.status(400).json({ 
+          ok: false, 
+          error: 'Need at least 3 calibration readings' 
+        });
+      }
+
+      const ip =
+        (req.headers['x-forwarded-for']?.toString().split(',')[0].trim()) ||
+        req.socket.remoteAddress?.replace('::ffff:', '') ||
+        'unknown';
+
+      const deviceId = await ensureDevice({ uid, label, ip, rssi: null });
+      if (!deviceId) return res.status(500).json({ ok: false, error: 'Device error' });
+
+      // Calculate averages (moyenne) from calibration readings
+      let sumGas = 0, sumTemp = 0, sumHum = 0;
+      let count = 0;
+
+      readings.forEach(r => {
+        if (r.g !== undefined && r.t !== undefined && r.h !== undefined) {
+          sumGas += Number(r.g);
+          sumTemp += Number(r.t);
+          sumHum += Number(r.h);
+          count++;
+        }
+      });
+
+      if (count === 0) {
+        return res.status(400).json({ ok: false, error: 'No valid readings' });
+      }
+
+      const avgGas = Math.round(sumGas / count);
+      const avgTemp = parseFloat((sumTemp / count).toFixed(2));
+      const avgHumLow = parseFloat(((sumHum / count) * 0.9).toFixed(2));
+      const avgHumHigh = parseFloat(((sumHum / count) * 1.1).toFixed(2));
+
+      // Get or create thresholds
+      await getOrCreateThresholds(deviceId);
+
+      // Update safe baselines in database
+      await db.query(
+        `UPDATE thresholds 
+         SET gas_safe_baseline = ?, 
+             temp_safe_baseline = ?,
+             humidity_safe_baseline_low = ?,
+             humidity_safe_baseline_high = ?
+         WHERE device_id = ?`,
+        [avgGas, avgTemp, avgHumLow, avgHumHigh, deviceId]
+      );
+
+      return res.json({
+        ok: true,
+        message: 'Calibration successful',
+        baselines: {
+          gas: avgGas,
+          temperature: avgTemp,
+          humidity_low: avgHumLow,
+          humidity_high: avgHumHigh
+        }
+      });
+    } catch (e) {
+      console.error('Calibration error:', e);
+      return res.status(500).json({ ok: false, error: 'Server error' });
+    }
+  });
+
   // ========= Prediction Functions =========
+  const deviceHistory = new Map(); // Store recent readings per device
+  
   function generatePrediction(deviceId, currentReading, thresholds) {
     // Get or create device history
     if (!deviceHistory.has(deviceId)) {
@@ -335,16 +428,19 @@ export function makeIngestRouter({ db, io }) {
 
     // Add current reading to history
     history.push({
-      ...currentReading,
-      ts: new Date().toISOString()
+      g: currentReading.g,
+      t: currentReading.t,
+      h: currentReading.h,
+      f: currentReading.f,
+      ts: Date.now()
     });
 
-    // Keep only last 20 readings for prediction
-    if (history.length > 20) {
+    // Keep only last 10 readings for prediction (enough for rate calculation)
+    if (history.length > 10) {
       history.shift();
     }
 
-    // Generate prediction using the predictor
+    // Generate prediction using current reading and recent history
     const prediction = predictor.generatePrediction(currentReading, history, thresholds);
 
     return prediction;
