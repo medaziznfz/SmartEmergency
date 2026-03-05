@@ -27,29 +27,50 @@ export function makeIngestRouter({ db, io }) {
 
   async function getOrCreateThresholds(deviceId) {
     const [rows] = await db.query(
-      `SELECT gas_threshold, temp_threshold, flame_enabled,
-              humidity_low_threshold, humidity_high_threshold, humidity_enabled
+      `SELECT gas_threshold, gas_enabled, temp_threshold, temp_enabled, flame_enabled,
+              humidity_low_threshold, humidity_high_threshold, humidity_enabled,
+              buzzer_enabled, red_light_enabled, config_pull_interval_sec
        FROM thresholds WHERE device_id=? LIMIT 1`,
       [deviceId]
     );
 
-    if (rows.length) return rows[0];
+    if (rows.length) {
+      const r = rows[0];
+      return {
+        gas_threshold: Number(r.gas_threshold),
+        gas_enabled: Number(r.gas_enabled ?? 1),
+        temp_threshold: Number(r.temp_threshold),
+        temp_enabled: Number(r.temp_enabled ?? 1),
+        flame_enabled: Number(r.flame_enabled),
+        humidity_low_threshold: Number(r.humidity_low_threshold),
+        humidity_high_threshold: Number(r.humidity_high_threshold),
+        humidity_enabled: Number(r.humidity_enabled),
+        buzzer_enabled: Number(r.buzzer_enabled ?? 1),
+        red_light_enabled: Number(r.red_light_enabled ?? 1),
+        config_pull_interval_sec: Number(r.config_pull_interval_sec ?? 30)
+      };
+    }
 
     await db.query(
       `INSERT INTO thresholds
-       (device_id, gas_threshold, temp_threshold, flame_enabled,
-        humidity_low_threshold, humidity_high_threshold, humidity_enabled)
-       VALUES (?, 400, 60.00, 1, 20.00, 80.00, 0)`,
+       (device_id, gas_threshold, gas_enabled, temp_threshold, temp_enabled, flame_enabled,
+        humidity_low_threshold, humidity_high_threshold, humidity_enabled, buzzer_enabled, red_light_enabled, config_pull_interval_sec)
+       VALUES (?, 400, 1, 60.00, 1, 1, 20.00, 80.00, 0, 1, 1, 30)`,
       [deviceId]
     );
 
     return {
       gas_threshold: 400,
+      gas_enabled: 1,
       temp_threshold: 60.0,
+      temp_enabled: 1,
       flame_enabled: 1,
       humidity_low_threshold: 20.0,
       humidity_high_threshold: 80.0,
-      humidity_enabled: 0
+      humidity_enabled: 0,
+      buzzer_enabled: 1,
+      red_light_enabled: 1,
+      config_pull_interval_sec: 30
     };
   }
 
@@ -122,11 +143,16 @@ export function makeIngestRouter({ db, io }) {
         ok: true,
         uid,
         gas_threshold: Number(th.gas_threshold),
+        gas_enabled: Number(th.gas_enabled),
         temp_threshold: Number(th.temp_threshold),
+        temp_enabled: Number(th.temp_enabled),
         flame_enabled: Number(th.flame_enabled),
         humidity_low_threshold: Number(th.humidity_low_threshold),
         humidity_high_threshold: Number(th.humidity_high_threshold),
-        humidity_enabled: Number(th.humidity_enabled)
+        humidity_enabled: Number(th.humidity_enabled),
+        buzzer_enabled: Number(th.buzzer_enabled),
+        red_light_enabled: Number(th.red_light_enabled),
+        config_pull_interval_sec: Number(th.config_pull_interval_sec ?? 30)
       });
     } catch (e) {
       console.error('device-config error:', e);
@@ -169,10 +195,10 @@ export function makeIngestRouter({ db, io }) {
 
       const th = await getOrCreateThresholds(deviceId);
 
-      // Compute server-side triggers (per-device thresholds)
+      // Compute server-side triggers (per-device thresholds; only if trigger is enabled)
       const flameDetected = Number(th.flame_enabled) === 1 && Number(f) === 0;
-      const gasHigh = Number(g) >= Number(th.gas_threshold);
-      const tempHigh = Number(t) >= Number(th.temp_threshold);
+      const gasHigh = Number(th.gas_enabled) === 1 && Number(g) >= Number(th.gas_threshold);
+      const tempHigh = Number(th.temp_enabled) === 1 && Number(t) >= Number(th.temp_threshold);
 
       const humEnabled = Number(th.humidity_enabled) === 1;
       const humLow = Number(th.humidity_low_threshold);
@@ -183,17 +209,41 @@ export function makeIngestRouter({ db, io }) {
 
       const triggersNow = { flame: flameDetected, gas: gasHigh, temp: tempHigh, humidity: humidityBad };
 
-      // Store reading
+      // Hysteresis: require 2 consecutive same-state readings before start/close alarm event (stops blinking)
+      const [[devRow]] = await db.query(
+        `SELECT alarm_last_state, alarm_consecutive FROM devices WHERE id=?`,
+        [deviceId]
+      );
+      let lastState = devRow?.alarm_last_state != null ? Number(devRow.alarm_last_state) : null;
+      let consecutive = Number(devRow?.alarm_consecutive) || 0;
+
+      if (lastState === alarmComputed) {
+        consecutive += 1;
+      } else {
+        consecutive = 1;
+        lastState = alarmComputed;
+      }
+
+      await db.query(
+        `UPDATE devices SET alarm_last_state=?, alarm_consecutive=? WHERE id=?`,
+        [lastState, consecutive, deviceId]
+      );
+
+      const confirmThreshold = 2;
+      const alarmConfirmed = consecutive >= confirmThreshold && alarmComputed === 1;
+      const safeConfirmed = consecutive >= confirmThreshold && alarmComputed === 0;
+
+      // Store reading (always with current computed alarm)
       await db.query(
         `INSERT INTO readings (device_id, humidity, temperature, gas, flame, alarm, triggers, alarm_device)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         [deviceId, h, t, g, f, alarmComputed, JSON.stringify(triggersNow), alarmDevice]
       );
 
-      // Alarm events with duration
+      // Alarm events: only start after confirmed danger, only close after confirmed safe
       const openEvent = await getOpenAlarmEvent(deviceId);
 
-      if (alarmComputed === 1) {
+      if (alarmConfirmed) {
         if (!openEvent) {
           await startAlarmEvent(deviceId, triggersNow, { h, t, g });
         } else {
@@ -206,8 +256,8 @@ export function makeIngestRouter({ db, io }) {
           };
           await updateAlarmEvent(openEvent, union, { h, t, g });
         }
-      } else {
-        if (openEvent) await closeAlarmEvent(openEvent.id);
+      } else if (safeConfirmed && openEvent) {
+        await closeAlarmEvent(openEvent.id);
       }
 
       const payload = {
@@ -219,11 +269,16 @@ export function makeIngestRouter({ db, io }) {
         triggers: triggersNow,
         thresholds: {
           gas_threshold: Number(th.gas_threshold),
+          gas_enabled: Number(th.gas_enabled),
           temp_threshold: Number(th.temp_threshold),
+          temp_enabled: Number(th.temp_enabled),
           flame_enabled: Number(th.flame_enabled),
           humidity_low_threshold: Number(th.humidity_low_threshold),
           humidity_high_threshold: Number(th.humidity_high_threshold),
-          humidity_enabled: Number(th.humidity_enabled)
+          humidity_enabled: Number(th.humidity_enabled),
+          buzzer_enabled: Number(th.buzzer_enabled),
+          red_light_enabled: Number(th.red_light_enabled),
+          config_pull_interval_sec: Number(th.config_pull_interval_sec ?? 30)
         },
         rssi: Number.isFinite(rssi) ? rssi : null,
         ip,

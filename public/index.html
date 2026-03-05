@@ -1,185 +1,246 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>SmartEmergency Dashboard</title>
-
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SmartEmergency</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="/css/app.css" rel="stylesheet">
   <script src="/socket.io/socket.io.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-
-  <style>
-    .alarm-on { border: 2px solid #dc3545; box-shadow: 0 0 18px rgba(220,53,69,.35); }
-    .gauge { width: 110px; height: 110px; }
-    .dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; }
-    .dot-online { background:#198754; }
-    .dot-offline { background:#dc3545; }
-    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
-  </style>
 </head>
-<body class="bg-light">
-  <div class="container py-4">
-    <div class="d-flex align-items-center justify-content-between mb-3">
-      <h3 class="m-0">🔥 SmartEmergency Dashboard</h3>
-      <span class="text-muted small">Realtime + History + Thresholds + Alarm Events</span>
-    </div>
+<body>
+  <header class="app-header">
+    <h1>🔥 SmartEmergency</h1>
+    <nav class="tab-nav">
+      <a href="#" class="nav-link active" data-tab="dashboard">Dashboard</a>
+      <a href="#" class="nav-link" data-tab="history">History</a>
+      <a href="#" class="nav-link" data-tab="config">Config</a>
+    </nav>
+  </header>
 
-    <div id="devices" class="row g-3"></div>
-
-    <div class="card mt-4">
-      <div class="card-body">
-        <div class="d-flex flex-wrap gap-3 align-items-center justify-content-between">
-          <div>
-            <h5 class="card-title mb-1">Chart</h5>
-            <div class="text-muted small">Live or History (selected device)</div>
-          </div>
-
-          <div class="d-flex gap-2 align-items-center">
-            <select id="deviceSelect" class="form-select" style="min-width: 360px;"></select>
-            <span id="activeAlarmBadge" class="badge text-bg-success">SAFE</span>
-            <button id="liveModeBtn" class="btn btn-outline-primary btn-sm">Live mode</button>
-          </div>
-        </div>
-
-        <div class="mt-3">
-          <canvas id="chart" height="110"></canvas>
-        </div>
-
-        <div class="mt-3 d-flex flex-wrap gap-2 align-items-end">
-          <div>
-            <label class="form-label small mb-1">From (optional)</label>
-            <input id="fromTs" class="form-control form-control-sm" type="datetime-local">
-          </div>
-          <div>
-            <label class="form-label small mb-1">To (optional)</label>
-            <input id="toTs" class="form-control form-control-sm" type="datetime-local">
-          </div>
-          <div>
-            <label class="form-label small mb-1">Limit</label>
-            <input id="limitHistory" class="form-control form-control-sm" type="number" min="50" max="5000" value="500">
-          </div>
-          <button id="loadHistoryBtn" class="btn btn-secondary btn-sm">Load history</button>
-          <span id="historyMsg" class="text-muted small"></span>
-        </div>
-      </div>
-    </div>
-
-    <div class="row g-3 mt-2">
-      <div class="col-12 col-lg-5">
-        <div class="card">
-          <div class="card-body">
-            <h5 class="card-title mb-3">Thresholds (per device)</h5>
-
-            <div class="mb-2 text-muted small">
-              Alarm computed by server using these values. ESP will fetch them too.
-            </div>
-
-            <div class="mb-3">
-              <label class="form-label">Gas Threshold (0..1023)</label>
-              <input id="gasTh" type="number" class="form-control" min="0" max="1023" step="1" />
-            </div>
-
-            <div class="mb-3">
-              <label class="form-label">Temp Threshold (°C)</label>
-              <input id="tempTh" type="number" class="form-control" min="-20" max="120" step="0.5" />
-            </div>
-
-            <div class="form-check mb-3">
-              <input id="flameEnabled" class="form-check-input" type="checkbox">
-              <label class="form-check-label" for="flameEnabled">Enable Flame trigger</label>
-            </div>
-
-            <hr/>
-
-            <div class="form-check mb-2">
-              <input id="humidityEnabled" class="form-check-input" type="checkbox">
-              <label class="form-check-label" for="humidityEnabled">Enable Humidity range trigger</label>
-            </div>
-
-            <div class="row g-2 mb-3">
-              <div class="col">
-                <label class="form-label">Humidity LOW (%)</label>
-                <input id="humLow" type="number" class="form-control" min="0" max="100" step="0.5" />
+  <main class="container py-4">
+    <!-- Dashboard Tab -->
+    <section id="tab-dashboard" class="tab-pane active">
+      <div id="dashboard-devices" class="row g-3"></div>
+      <div class="dashboard-realtime-row row g-4 mt-2">
+        <div class="col-12">
+          <div class="card card-chart">
+            <div class="card-body">
+              <div class="d-flex flex-wrap gap-3 align-items-center justify-content-between mb-3">
+                <h5 class="card-title mb-0">Realtime Chart</h5>
+                <div class="d-flex gap-2 align-items-center">
+                  <select id="dashboard-device-select" class="form-select form-select-dashboard"></select>
+                  <span id="dashboard-alarm-badge" class="badge badge-status text-bg-success">SAFE</span>
+                </div>
               </div>
-              <div class="col">
-                <label class="form-label">Humidity HIGH (%)</label>
-                <input id="humHigh" type="number" class="form-control" min="0" max="100" step="0.5" />
+              <canvas id="dashboard-chart" height="140"></canvas>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- History Tab -->
+    <section id="tab-history" class="tab-pane">
+      <div class="card mb-4">
+        <div class="card-body">
+          <h5 class="card-title mb-3">Chart (selected device)</h5>
+          <div class="d-flex flex-wrap gap-2 align-items-end mb-3">
+            <div>
+              <label class="form-label small mb-1">Device</label>
+              <select id="history-device-select" class="form-select" style="min-width: 220px;"></select>
+            </div>
+            <div>
+              <label class="form-label small mb-1">From</label>
+              <input id="history-from" class="form-control form-control-sm" type="datetime-local">
+            </div>
+            <div>
+              <label class="form-label small mb-1">To</label>
+              <input id="history-to" class="form-control form-control-sm" type="datetime-local">
+            </div>
+            <div>
+              <label class="form-label small mb-1">Limit</label>
+              <input id="history-limit" class="form-control form-control-sm" type="number" min="50" max="5000" value="500">
+            </div>
+            <button id="history-load-chart-btn" class="btn btn-primary btn-sm">Load chart</button>
+          </div>
+          <canvas id="history-chart" height="120"></canvas>
+        </div>
+      </div>
+
+      <div class="row g-4">
+        <div class="col-12 col-lg-6">
+          <div class="card">
+            <div class="card-body">
+              <h5 class="card-title mb-3">Alarm History</h5>
+              <div class="table-filter-bar">
+                <div>
+                  <label class="form-label small mb-1">Device</label>
+                  <select id="history-alarms-device" class="form-select form-select-sm"></select>
+                </div>
+                <div>
+                  <label class="form-label small mb-1">From</label>
+                  <input id="history-alarms-from" class="form-control form-control-sm" type="datetime-local">
+                </div>
+                <div>
+                  <label class="form-label small mb-1">To</label>
+                  <input id="history-alarms-to" class="form-control form-control-sm" type="datetime-local">
+                </div>
+                <div>
+                  <label class="form-label small mb-1">Search</label>
+                  <input id="history-alarms-search" class="form-control form-control-sm" type="text" placeholder="Triggers...">
+                </div>
+                <button id="history-alarms-apply" class="btn btn-outline-primary btn-sm">Apply</button>
+              </div>
+              <div class="table-responsive">
+                <table class="table table-sm data-table align-middle">
+                  <thead>
+                    <tr><th>Device</th><th>Start</th><th>End</th><th>Duration</th><th>Triggers</th><th>Peaks</th></tr>
+                  </thead>
+                  <tbody id="history-alarms-tbody"></tbody>
+                </table>
+              </div>
+              <div class="pagination-bar">
+                <span class="page-info" id="history-alarms-info">—</span>
+                <div class="pagination-controls" id="history-alarms-pagination"></div>
               </div>
             </div>
-
-            <button id="saveTh" class="btn btn-primary w-100">Save Thresholds</button>
-            <div id="thMsg" class="mt-2 small"></div>
           </div>
         </div>
-
-        <div class="card mt-3">
-          <div class="card-body">
-            <h5 class="card-title mb-2">Active Alarm</h5>
-            <div id="activeAlarmInfo" class="text-muted small">No active alarm.</div>
-          </div>
-        </div>
-      </div>
-
-      <div class="col-12 col-lg-7">
-        <div class="card">
-          <div class="card-body">
-            <div class="d-flex align-items-center justify-content-between flex-wrap gap-2">
-              <h5 class="card-title mb-0">Alarm History</h5>
-              <button id="refreshAlarms" class="btn btn-outline-secondary btn-sm">Refresh</button>
+        <div class="col-12 col-lg-6">
+          <div class="card">
+            <div class="card-body">
+              <h5 class="card-title mb-3">Readings History</h5>
+              <div class="table-filter-bar">
+                <div>
+                  <label class="form-label small mb-1">Device</label>
+                  <select id="history-readings-device" class="form-select form-select-sm"></select>
+                </div>
+                <div>
+                  <label class="form-label small mb-1">From</label>
+                  <input id="history-readings-from" class="form-control form-control-sm" type="datetime-local">
+                </div>
+                <div>
+                  <label class="form-label small mb-1">To</label>
+                  <input id="history-readings-to" class="form-control form-control-sm" type="datetime-local">
+                </div>
+                <div>
+                  <label class="form-label small mb-1">Search</label>
+                  <input id="history-readings-search" class="form-control form-control-sm" type="text" placeholder="Value...">
+                </div>
+                <button id="history-readings-apply" class="btn btn-outline-primary btn-sm">Apply</button>
+              </div>
+              <div class="table-responsive">
+                <table class="table table-sm data-table align-middle">
+                  <thead>
+                    <tr><th>Device</th><th>Time</th><th>Temp</th><th>Hum</th><th>Gas</th><th>Flame</th><th>Alarm</th><th>Triggers</th></tr>
+                  </thead>
+                  <tbody id="history-readings-tbody"></tbody>
+                </table>
+              </div>
+              <div class="pagination-bar">
+                <span class="page-info" id="history-readings-info">—</span>
+                <div class="pagination-controls" id="history-readings-pagination"></div>
+              </div>
             </div>
-
-            <div class="table-responsive mt-3">
-              <table class="table table-sm align-middle">
-                <thead>
-                  <tr>
-                    <th>Start</th>
-                    <th>End</th>
-                    <th>Duration</th>
-                    <th>Triggers</th>
-                    <th>Peaks</th>
-                  </tr>
-                </thead>
-                <tbody id="alarmsTbody">
-                  <tr><td colspan="5" class="text-muted">Select a device…</td></tr>
-                </tbody>
-              </table>
-            </div>
-
-            <hr/>
-
-            <div class="d-flex align-items-center justify-content-between flex-wrap gap-2">
-              <h5 class="card-title mb-0">Readings History Table</h5>
-              <button id="refreshReadings" class="btn btn-outline-secondary btn-sm">Refresh</button>
-            </div>
-
-            <div class="table-responsive mt-3">
-              <table class="table table-sm align-middle">
-                <thead>
-                  <tr>
-                    <th>Time</th>
-                    <th>Temp</th>
-                    <th>Hum</th>
-                    <th>Gas</th>
-                    <th>Flame</th>
-                    <th>Alarm</th>
-                    <th>Triggers</th>
-                  </tr>
-                </thead>
-                <tbody id="readingsTbody">
-                  <tr><td colspan="7" class="text-muted">Select a device…</td></tr>
-                </tbody>
-              </table>
-            </div>
-
-            <div class="text-muted small">Tip: use “Load history” to load a bigger range into the chart.</div>
           </div>
         </div>
       </div>
-    </div>
+    </section>
 
-  </div>
+    <!-- Config Tab -->
+    <section id="tab-config" class="tab-pane">
+      <div class="row justify-content-center">
+        <div class="col-12 col-lg-8">
+          <div class="card">
+            <div class="card-body">
+              <h5 class="card-title mb-3">Device Thresholds & Alerts</h5>
+              <p class="text-muted small mb-4">Select a device to edit. Each trigger can be active or inactive. ESP devices fetch config on boot.</p>
+              <div class="mb-4">
+                <label class="form-label">Device</label>
+                <select id="config-device-select" class="form-select"></select>
+              </div>
 
-  <script src="/app.js"></script>
+              <div class="config-section">
+                <h6 class="config-section-title">Trigger thresholds</h6>
+                <div class="row g-3 mb-3">
+                  <div class="col-12 col-md-6">
+                    <div class="form-check form-switch">
+                      <input id="config-gas-enabled" class="form-check-input" type="checkbox">
+                      <label class="form-check-label" for="config-gas-enabled">Gas trigger active</label>
+                    </div>
+                    <label class="form-label small mt-1">Gas threshold (0–1023)</label>
+                    <input id="config-gas" type="number" class="form-control form-control-sm" min="0" max="1023" step="1">
+                  </div>
+                  <div class="col-12 col-md-6">
+                    <div class="form-check form-switch">
+                      <input id="config-temp-enabled" class="form-check-input" type="checkbox">
+                      <label class="form-check-label" for="config-temp-enabled">Temp trigger active</label>
+                    </div>
+                    <label class="form-label small mt-1">Temp threshold (°C)</label>
+                    <input id="config-temp" type="number" class="form-control form-control-sm" min="-20" max="120" step="0.5">
+                  </div>
+                </div>
+                <div class="mb-3">
+                  <div class="form-check form-switch">
+                    <input id="config-flame" class="form-check-input" type="checkbox">
+                    <label class="form-check-label" for="config-flame">Flame trigger active</label>
+                  </div>
+                </div>
+                <div class="mb-3">
+                  <div class="form-check form-switch">
+                    <input id="config-humidity-enabled" class="form-check-input" type="checkbox">
+                    <label class="form-check-label" for="config-humidity-enabled">Humidity range trigger active</label>
+                  </div>
+                  <div class="row g-2 mt-2">
+                    <div class="col">
+                      <label class="form-label small">Humidity LOW (%)</label>
+                      <input id="config-hum-low" type="number" class="form-control form-control-sm" min="0" max="100" step="0.5">
+                    </div>
+                    <div class="col">
+                      <label class="form-label small">Humidity HIGH (%)</label>
+                      <input id="config-hum-high" type="number" class="form-control form-control-sm" min="0" max="100" step="0.5">
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <hr class="my-4">
+              <div class="config-section">
+                <h6 class="config-section-title">Alarm outputs (ESP)</h6>
+                <div class="form-check form-switch mb-2">
+                  <input id="config-buzzer-enabled" class="form-check-input" type="checkbox">
+                  <label class="form-check-label" for="config-buzzer-enabled">Buzzer active</label>
+                </div>
+                <div class="form-check form-switch mb-3">
+                  <input id="config-red-light-enabled" class="form-check-input" type="checkbox">
+                  <label class="form-check-label" for="config-red-light-enabled">Red alarm light active</label>
+                </div>
+              </div>
+
+              <hr class="my-4">
+              <div class="config-section">
+                <h6 class="config-section-title">Config pull (ESP)</h6>
+                <p class="text-muted small mb-2">How often the device fetches config from the server. Lower = faster apply, more requests.</p>
+                <div class="row align-items-center g-2">
+                  <div class="col-auto">
+                    <label class="form-label small mb-0">Pull interval (seconds)</label>
+                    <input id="config-pull-interval" type="number" class="form-control form-control-sm" min="5" max="600" step="1">
+                  </div>
+                </div>
+              </div>
+
+              <button id="config-save" class="btn btn-primary w-100 btn-save">Save settings</button>
+              <div id="config-msg" class="mt-2 small"></div>
+              <div id="config-applied-info" class="mt-2 small text-muted"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script type="module" src="/app.js"></script>
 </body>
 </html>

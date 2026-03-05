@@ -1,4 +1,5 @@
 -- SmartEmergency full schema (fresh install)
+-- This schema reflects the current database structure
 CREATE DATABASE IF NOT EXISTS iot_safety
   CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
@@ -10,19 +11,27 @@ CREATE TABLE IF NOT EXISTS devices (
   label VARCHAR(64) NOT NULL,
   last_ip VARCHAR(64),
   last_rssi INT,
-  last_seen TIMESTAMP NULL DEFAULT NULL
+  last_seen TIMESTAMP NULL DEFAULT NULL,
+  alarm_last_state TINYINT NULL DEFAULT NULL,
+  alarm_consecutive INT NOT NULL DEFAULT 0
 );
 
 -- Per-device thresholds (one row per device_id)
 CREATE TABLE IF NOT EXISTS thresholds (
   device_id INT PRIMARY KEY,
   gas_threshold INT NOT NULL DEFAULT 400,
+  gas_enabled TINYINT NOT NULL DEFAULT 1,
   temp_threshold DECIMAL(5,2) NOT NULL DEFAULT 60.00,
+  temp_enabled TINYINT NOT NULL DEFAULT 1,
   flame_enabled TINYINT NOT NULL DEFAULT 1,
 
   humidity_low_threshold DECIMAL(5,2) NOT NULL DEFAULT 20.00,
   humidity_high_threshold DECIMAL(5,2) NOT NULL DEFAULT 80.00,
   humidity_enabled TINYINT NOT NULL DEFAULT 0,
+
+  buzzer_enabled TINYINT NOT NULL DEFAULT 1,
+  red_light_enabled TINYINT NOT NULL DEFAULT 1,
+  config_pull_interval_sec INT NOT NULL DEFAULT 30,
 
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE

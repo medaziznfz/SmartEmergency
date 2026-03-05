@@ -42,17 +42,23 @@ unsigned long prevCfgMillis  = 0;
 
 const unsigned long sendInterval   = 1000;
 const unsigned long redFlashSpeed  = 200;
-const unsigned long configInterval = 30000;
+unsigned long configIntervalMs    = 30000;  // from server (config_pull_interval_sec * 1000)
 
 // ================= Thresholds (from web) =================
 int   GAS_THRESHOLD  = 400;
+bool  GAS_ENABLED    = true;
 float TEMP_THRESHOLD = 60.0;
+bool  TEMP_ENABLED  = true;
 bool  FLAME_ENABLED  = true;
 
 // Humidity range thresholds
 bool  HUM_ENABLED = false;
 float HUM_LOW = 20.0;
 float HUM_HIGH = 80.0;
+
+// Alarm outputs (from web: enable/disable buzzer and red LEDs)
+bool BUZZER_ENABLED   = true;
+bool RED_LIGHT_ENABLED = true;
 
 // ================= State =================
 bool isAlarmActive = false;
@@ -132,15 +138,29 @@ void fetchConfig() {
 
     if (!err && doc["ok"] == true) {
       GAS_THRESHOLD  = doc["gas_threshold"]  | GAS_THRESHOLD;
+      GAS_ENABLED    = ((doc["gas_enabled"]    | 1) == 1);
       TEMP_THRESHOLD = doc["temp_threshold"] | TEMP_THRESHOLD;
-      FLAME_ENABLED  = ((doc["flame_enabled"] | 1) == 1);
+      TEMP_ENABLED   = ((doc["temp_enabled"]   | 1) == 1);
+      FLAME_ENABLED  = ((doc["flame_enabled"]  | 1) == 1);
 
-      HUM_LOW = doc["humidity_low_threshold"]  | HUM_LOW;
-      HUM_HIGH = doc["humidity_high_threshold"] | HUM_HIGH;
+      HUM_LOW   = doc["humidity_low_threshold"]  | HUM_LOW;
+      HUM_HIGH  = doc["humidity_high_threshold"] | HUM_HIGH;
       HUM_ENABLED = ((doc["humidity_enabled"] | 0) == 1);
 
-      Serial.printf("CFG OK => gas=%d temp=%.1f flame=%d hum[%0.1f..%0.1f] enabled=%d\n",
-                    GAS_THRESHOLD, TEMP_THRESHOLD, FLAME_ENABLED, HUM_LOW, HUM_HIGH, HUM_ENABLED);
+      BUZZER_ENABLED    = doc["buzzer_enabled"].isNull()    ? true : (doc["buzzer_enabled"].as<int>() == 1);
+      RED_LIGHT_ENABLED = doc["red_light_enabled"].isNull() ? true : (doc["red_light_enabled"].as<int>() == 1);
+
+      int pullSec = doc["config_pull_interval_sec"] | 30;
+      if (pullSec < 5) pullSec = 5;
+      if (pullSec > 600) pullSec = 600;
+      configIntervalMs = (unsigned long)pullSec * 1000;
+
+      Serial.printf("CFG OK => gas=%d(%s) temp=%.1f(%s) flame=%d hum[%.1f..%.1f](%s) buzzer=%s redLight=%s pull=%lus\n",
+                    GAS_THRESHOLD, GAS_ENABLED ? "on" : "off",
+                    TEMP_THRESHOLD, TEMP_ENABLED ? "on" : "off",
+                    FLAME_ENABLED, HUM_LOW, HUM_HIGH, HUM_ENABLED ? "on" : "off",
+                    BUZZER_ENABLED ? "on" : "off", RED_LIGHT_ENABLED ? "on" : "off",
+                    (unsigned long)(configIntervalMs / 1000));
     } else {
       Serial.println("CFG: parse/ok error");
     }
@@ -170,33 +190,51 @@ bool humidityBad() {
 
 void checkSafety(unsigned long nowMs) {
   bool flameDetected = (lastFlame == LOW);
-  bool gasHigh = (lastGas >= GAS_THRESHOLD);
-  bool tempHigh = (!isnan(lastT) && lastT >= TEMP_THRESHOLD);
-  bool humBad = humidityBad();
+  bool gasHigh   = GAS_ENABLED   && (lastGas >= GAS_THRESHOLD);
+  bool tempHigh  = TEMP_ENABLED  && (!isnan(lastT) && lastT >= TEMP_THRESHOLD);
+  bool humBad    = humidityBad();
+  bool flameBad  = FLAME_ENABLED && flameDetected;
 
-  bool danger = gasHigh || tempHigh || humBad || (FLAME_ENABLED && flameDetected);
+  bool danger = gasHigh || tempHigh || humBad || flameBad;
+
+  // Note: Alarm state is now determined by server response
+  // ESP only handles local outputs based on server-confirmed alarm state
+  // This prevents fake alarms due to mismatched calculations
 
   if (danger) {
     if (!isAlarmActive) {
-      Serial.println("\n!!! ALARM STARTED !!!");
-      Serial.printf("Triggers: flame=%d gas=%d temp=%d humidity=%d\n",
-                    (FLAME_ENABLED && flameDetected), gasHigh, tempHigh, humBad);
-      isAlarmActive = true;
-    }
-
-    digitalWrite(BUZZER, HIGH);
-
-    if (nowMs - prevRedMillis >= redFlashSpeed) {
-      prevRedMillis = nowMs;
-      redToggle = !redToggle;
-      digitalWrite(RED_LED_1, redToggle);
-      digitalWrite(RED_LED_2, !redToggle);
+      Serial.println("\n⚠️ Local danger detected - waiting for server confirmation...");
+      Serial.printf("Local triggers: flame=%d gas=%d temp=%d humidity=%d\n",
+                    flameBad, gasHigh, tempHigh, humBad);
+      // Don't set isAlarmActive here - wait for server confirmation
     }
   } else {
     if (isAlarmActive) {
-      Serial.println("Alarm cleared.");
-      isAlarmActive = false;
+      Serial.println("Local danger cleared - waiting for server confirmation...");
+      // Don't clear isAlarmActive here - wait for server confirmation
     }
+  }
+
+  // Control outputs based on server-confirmed alarm state only
+  if (isAlarmActive) {
+    if (BUZZER_ENABLED) {
+      digitalWrite(BUZZER, HIGH);
+    } else {
+      digitalWrite(BUZZER, LOW);
+    }
+
+    if (RED_LIGHT_ENABLED) {
+      if (nowMs - prevRedMillis >= redFlashSpeed) {
+        prevRedMillis = nowMs;
+        redToggle = !redToggle;
+        digitalWrite(RED_LED_1, redToggle);
+        digitalWrite(RED_LED_2, !redToggle);
+      }
+    } else {
+      digitalWrite(RED_LED_1, LOW);
+      digitalWrite(RED_LED_2, LOW);
+    }
+  } else {
     digitalWrite(BUZZER, LOW);
     digitalWrite(RED_LED_1, LOW);
     digitalWrite(RED_LED_2, LOW);
@@ -220,7 +258,7 @@ void sendSensorDataHTTP() {
   json += "\"t\":" + String(lastT, 1) + ",";
   json += "\"g\":" + String(lastGas) + ",";
   json += "\"f\":" + String(lastFlame) + ",";
-  json += "\"alarm\":" + String(isAlarmActive ? 1 : 0) + ",";
+  json += "\"alarm\":" + String(isAlarmActive ? 1 : 0) + ",";  // Send current state for reference
   json += "\"rssi\":" + String(WiFi.RSSI());
   json += "}";
 
@@ -243,6 +281,22 @@ void sendSensorDataHTTP() {
   int code = http.POST(json);
   if (code > 0) {
     Serial.printf("POST code: %d\n", code);
+    
+    // Read server response to get confirmed alarm state
+    String response = http.getString();
+    Serial.printf("Server response: %s\n", response.substring(0, 100));
+    
+    // Parse JSON response to get server-confirmed alarm state
+    StaticJsonDocument<256> doc;
+    DeserializationError err = deserializeJson(doc, response);
+    
+    if (!err && doc["ok"] == true) {
+      bool serverAlarm = doc["alarm"] | false;
+      if (serverAlarm != isAlarmActive) {
+        isAlarmActive = serverAlarm;
+        Serial.printf("🔥 Alarm state updated by server: %s\n", isAlarmActive ? "ACTIVE" : "SAFE");
+      }
+    }
   } else {
     Serial.printf("POST failed: %s\n", http.errorToString(code).c_str());
   }
@@ -283,7 +337,7 @@ void setup() {
 void loop() {
   unsigned long nowMs = millis();
 
-  if (nowMs - prevCfgMillis >= configInterval) {
+  if (nowMs - prevCfgMillis >= configIntervalMs) {
     prevCfgMillis = nowMs;
     fetchConfig();
   }
