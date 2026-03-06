@@ -1,7 +1,7 @@
 {
   "name": "smartemergency-server",
   "version": "1.0.0",
-  "description": "SmartEmergency IoT Server (ESP8266 -> HTTP -> MySQL + Realtime Dashboard + History + Per-device Thresholds + Alarm Events)",
+  "description": "SmartEmergency IoT Server",
   "type": "module",
   "main": "src/index.js",
   "scripts": {

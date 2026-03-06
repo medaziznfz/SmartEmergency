@@ -46,7 +46,7 @@ export function makeIngestRouter({ db, io }) {
       `SELECT gas_threshold, gas_enabled, temp_threshold, temp_enabled, flame_enabled,
               humidity_low_threshold, humidity_high_threshold, humidity_enabled,
               buzzer_enabled, red_light_enabled, red_led_flash_speed_ms, config_pull_interval_sec, send_interval_sec,
-              gas_safe_baseline, temp_safe_baseline, humidity_safe_baseline_low, humidity_safe_baseline_high
+              gas_safe_baseline, temp_safe_baseline, humidity_safe_baseline
        FROM thresholds WHERE device_id=? LIMIT 1`,
       [deviceId]
     );
@@ -70,8 +70,7 @@ export function makeIngestRouter({ db, io }) {
         // Safe baselines for prediction
         gas_safe_baseline: Number(r.gas_safe_baseline),
         temp_safe_baseline: Number(r.temp_safe_baseline),
-        humidity_safe_baseline_low: Number(r.humidity_safe_baseline_low),
-        humidity_safe_baseline_high: Number(r.humidity_safe_baseline_high)
+        humidity_safe_baseline: Number(r.humidity_safe_baseline)
       };
     }
 
@@ -80,8 +79,8 @@ export function makeIngestRouter({ db, io }) {
        (device_id, gas_threshold, gas_enabled, temp_threshold, temp_enabled, flame_enabled,
         humidity_low_threshold, humidity_high_threshold, humidity_enabled, buzzer_enabled, red_light_enabled, 
         red_led_flash_speed_ms, config_pull_interval_sec, send_interval_sec,
-        gas_safe_baseline, temp_safe_baseline, humidity_safe_baseline_low, humidity_safe_baseline_high)
-       VALUES (?, 400, 1, 60.00, 1, 1, 20.00, 80.00, 0, 1, 1, 200, 30, 1, 100, 25.00, 44.00, 56.00)`,
+        gas_safe_baseline, temp_safe_baseline, humidity_safe_baseline)
+       VALUES (?, 400, 1, 60.00, 1, 1, 20.00, 80.00, 0, 1, 1, 200, 30, 1, 100, 25.00, 50.00)`,
       [deviceId]
     );
 
@@ -101,8 +100,7 @@ export function makeIngestRouter({ db, io }) {
       send_interval_sec: 1,
       gas_safe_baseline: 100,
       temp_safe_baseline: 25.0,
-      humidity_safe_baseline_low: 44.0,
-      humidity_safe_baseline_high: 56.0
+      humidity_safe_baseline: 50.0
     };
   }
 
@@ -383,8 +381,7 @@ export function makeIngestRouter({ db, io }) {
 
       const avgGas = Math.round(sumGas / count);
       const avgTemp = parseFloat((sumTemp / count).toFixed(2));
-      const avgHumLow = parseFloat(((sumHum / count) * 0.9).toFixed(2));
-      const avgHumHigh = parseFloat(((sumHum / count) * 1.1).toFixed(2));
+      const avgHum = parseFloat((sumHum / count).toFixed(2));
 
       // Get or create thresholds
       await getOrCreateThresholds(deviceId);
@@ -394,10 +391,9 @@ export function makeIngestRouter({ db, io }) {
         `UPDATE thresholds 
          SET gas_safe_baseline = ?, 
              temp_safe_baseline = ?,
-             humidity_safe_baseline_low = ?,
-             humidity_safe_baseline_high = ?
+             humidity_safe_baseline = ?
          WHERE device_id = ?`,
-        [avgGas, avgTemp, avgHumLow, avgHumHigh, deviceId]
+        [avgGas, avgTemp, avgHum, deviceId]
       );
 
       return res.json({
@@ -406,8 +402,7 @@ export function makeIngestRouter({ db, io }) {
         baselines: {
           gas: avgGas,
           temperature: avgTemp,
-          humidity_low: avgHumLow,
-          humidity_high: avgHumHigh
+          humidity: avgHum
         }
       });
     } catch (e) {

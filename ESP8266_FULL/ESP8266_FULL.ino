@@ -8,7 +8,7 @@ const char* ssid     = "LanaRhoads";
 const char* password = "lanaXrhoads";
 
 // ================= Server =================
-const char* serverBase = "http://10.42.0.55:3000";
+const char* serverBase = "http://10.42.0.1:3000";
 const char* apiKey     = "CHANGE_ME_TO_SOMETHING_SECRET";
 
 // Change label per device (room1, room2, kitchen...)
@@ -125,24 +125,19 @@ void calibrateSensors() {
   float avgTemp = sumTemp / NUM_READINGS;
   float avgHum = sumHum / NUM_READINGS;
   
-  // Calculate humidity range (±10%)
-  float humLow = avgHum * 0.9;
-  float humHigh = avgHum * 1.1;
-  
   Serial.println("\n==== CALIBRATION RESULTS ====");
   Serial.printf("Average Gas: %.0f\n", avgGas);
   Serial.printf("Average Temp: %.2fC\n", avgTemp);
   Serial.printf("Average Humidity: %.2f%%\n", avgHum);
-  Serial.printf("Humidity Range: %.2f - %.2f%%\n", humLow, humHigh);
   
   // Send to server
-  sendCalibrationToServer(avgGas, avgTemp, humLow, humHigh);
+  sendCalibrationToServer(avgGas, avgTemp, avgHum);
   
   calibrationComplete = true;
   Serial.println("\n==== CALIBRATION COMPLETE ====\n");
 }
 
-void sendCalibrationToServer(float gas, float temp, float humLow, float humHigh) {
+void sendCalibrationToServer(float gas, float temp, float hum) {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("CAL: WiFi not connected, skipping calibration upload");
     return;
@@ -169,17 +164,14 @@ void sendCalibrationToServer(float gas, float temp, float humLow, float humHigh)
   doc["uid"] = deviceUID;
   doc["label"] = deviceLabel;
   
-  // Create array of 5 readings
+  // Create array of 5 readings with same baseline values
   JsonArray readings = doc.createNestedArray("readings");
   
   for (int i = 0; i < 5; i++) {
     StaticJsonDocument<96> reading;
     reading["g"] = (int)gas;
     reading["t"] = temp;
-    
-    // Spread humidity values across the range
-    float humValue = humLow + (i * ((humHigh - humLow) / 4.0));
-    reading["h"] = humValue;
+    reading["h"] = hum;
     
     readings.add(reading);
   }

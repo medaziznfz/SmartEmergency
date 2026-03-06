@@ -20,7 +20,7 @@ export function makeApiRouter({ db }) {
       `SELECT gas_threshold, gas_enabled, temp_threshold, temp_enabled, flame_enabled,
               humidity_low_threshold, humidity_high_threshold, humidity_enabled,
               buzzer_enabled, red_light_enabled, red_led_flash_speed_ms, config_pull_interval_sec, send_interval_sec, updated_at,
-              gas_safe_baseline, temp_safe_baseline, humidity_safe_baseline_low, humidity_safe_baseline_high
+              gas_safe_baseline, temp_safe_baseline, humidity_safe_baseline
        FROM thresholds WHERE device_id=? LIMIT 1`,
       [deviceId]
     );
@@ -44,8 +44,7 @@ export function makeApiRouter({ db }) {
         // Safe baselines for prediction
         gas_safe_baseline: r.gas_safe_baseline,
         temp_safe_baseline: r.temp_safe_baseline,
-        humidity_safe_baseline_low: r.humidity_safe_baseline_low,
-        humidity_safe_baseline_high: r.humidity_safe_baseline_high,
+        humidity_safe_baseline: r.humidity_safe_baseline,
         updated_at: r.updated_at
       };
     }
@@ -55,8 +54,8 @@ export function makeApiRouter({ db }) {
        (device_id, gas_threshold, gas_enabled, temp_threshold, temp_enabled, flame_enabled,
         humidity_low_threshold, humidity_high_threshold, humidity_enabled, buzzer_enabled, red_light_enabled, 
         red_led_flash_speed_ms, config_pull_interval_sec, send_interval_sec,
-        gas_safe_baseline, temp_safe_baseline, humidity_safe_baseline_low, humidity_safe_baseline_high)
-       VALUES (?, 400, 1, 60.00, 1, 1, 20.00, 80.00, 0, 1, 1, 200, 30, 1, 100, 25.00, 44.00, 56.00)`,
+        gas_safe_baseline, temp_safe_baseline, humidity_safe_baseline)
+       VALUES (?, 400, 1, 60.00, 1, 1, 20.00, 80.00, 0, 1, 1, 200, 30, 1, 100, 25.00, 50.00)`,
       [deviceId]
     );
 
@@ -76,8 +75,7 @@ export function makeApiRouter({ db }) {
       send_interval_sec: 1,
       gas_safe_baseline: 100, // 25% of 400
       temp_safe_baseline: 25.0,
-      humidity_safe_baseline_low: 44.0,
-      humidity_safe_baseline_high: 56.0,
+      humidity_safe_baseline: 50.0,
       updated_at: new Date()
     };
   }

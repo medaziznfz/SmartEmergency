@@ -32,8 +32,7 @@ CREATE TABLE IF NOT EXISTS thresholds (
   -- Safe baselines for prediction system
   gas_safe_baseline INT DEFAULT 100 COMMENT 'Safe baseline for gas (0-baseline = normal)',
   temp_safe_baseline DECIMAL(5,2) DEFAULT 25.00 COMMENT 'Safe baseline for temperature',
-  humidity_safe_baseline_low DECIMAL(5,2) DEFAULT 44.00 COMMENT 'Low end of safe humidity range',
-  humidity_safe_baseline_high DECIMAL(5,2) DEFAULT 56.00 COMMENT 'High end of safe humidity range',
+  humidity_safe_baseline DECIMAL(5,2) DEFAULT 50.00 COMMENT 'Safe baseline for humidity',
 
   buzzer_enabled TINYINT NOT NULL DEFAULT 1,
   red_light_enabled TINYINT NOT NULL DEFAULT 1,

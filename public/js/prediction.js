@@ -12,6 +12,9 @@ class PredictionDisplay {
       'HIGH': '#fd7e14',
       'CRITICAL': '#dc3545'
     };
+
+    // Keep last known alarm ETA while risk remains present.
+    this.lastEtaByUid = new Map();
   }
 
   /**
@@ -37,7 +40,7 @@ class PredictionDisplay {
     this.updateRiskLevel(uid, prediction.riskLevel, prediction.probabilities.overall);
     
     // Update time to alarm
-    this.updateTimeToAlarm(uid, prediction.timeToAlarm);
+    this.updateTimeToAlarm(uid, prediction.timeToAlarm, prediction.probabilities?.overall, prediction.riskLevel);
     
     // Update probabilities
     this.updateProbabilities(uid, prediction.probabilities);
@@ -163,25 +166,102 @@ class PredictionDisplay {
   }
 
   /**
-   * Update time to alarm display
+   * Update time to alarm display with enhanced formatting
    */
-  updateTimeToAlarm(uid, timeToAlarm) {
+  updateTimeToAlarm(uid, timeToAlarm, overallProb = 0, riskLevel = 'MINIMAL') {
     const timeEl = document.getElementById(`time-to-alarm-${uid}`);
-    if (timeEl) {
-      if (timeToAlarm === null || timeToAlarm === undefined) {
-        timeEl.innerHTML = '<span class="time-label small text-muted">Time to alarm: --</span>';
-      } else if (timeToAlarm === 0) {
-        timeEl.innerHTML = '<span class="time-label small text-danger fw-bold">IMMEDIATE</span>';
-      } else if (timeToAlarm < 60) {
-        timeEl.innerHTML = `<span class="time-label small text-warning fw-bold">~${timeToAlarm} seconds</span>`;
-      } else if (timeToAlarm < 3600) {
-        const minutes = Math.round(timeToAlarm / 60);
-        timeEl.innerHTML = `<span class="time-label small text-warning">~${minutes} minutes</span>`;
-      } else {
-        const hours = Math.round(timeToAlarm / 3600);
-        timeEl.innerHTML = `<span class="time-label small text-info">~${hours} hours</span>`;
-      }
+    if (!timeEl) return;
+    
+    const riskStillPresent = (Number(overallProb) || 0) >= 0.3 && riskLevel !== 'MINIMAL';
+
+    // If backend provided a value, always store it.
+    if (timeToAlarm !== null && timeToAlarm !== undefined) {
+      this.lastEtaByUid.set(uid, Number(timeToAlarm));
+    } else if (!riskStillPresent) {
+      // Risk is gone → clear any previous ETA.
+      this.lastEtaByUid.delete(uid);
     }
+
+    const effectiveEta = (timeToAlarm !== null && timeToAlarm !== undefined)
+      ? Number(timeToAlarm)
+      : (riskStillPresent ? this.lastEtaByUid.get(uid) : null);
+
+    if (effectiveEta === null || effectiveEta === undefined || Number.isNaN(effectiveEta)) {
+      timeEl.innerHTML = '<span class="time-label small text-muted">Time to alarm: --</span>';
+      return;
+    }
+
+    // Format time with appropriate detail level
+    const formattedTime = this.formatTimeToAlarm(effectiveEta);
+    const urgencyClass = this.getTimeUrgencyClass(effectiveEta);
+    const icon = this.getTimeIcon(effectiveEta);
+    
+    timeEl.innerHTML = `
+      <div class="d-flex align-items-center justify-content-between">
+        <span class="time-label small ${urgencyClass}">${icon} Time to alarm:</span>
+        <span class="time-value small fw-bold ${urgencyClass}">${formattedTime}</span>
+      </div>
+    `;
+  }
+
+  /**
+   * Format time to alarm - always show in seconds for countdown effect
+   */
+  formatTimeToAlarm(seconds) {
+    if (seconds <= 0) {
+      return 'NOW!';
+    } else if (seconds < 60) {
+      // Show exact seconds for countdown
+      return `${seconds}s`;
+    } else if (seconds < 120) {
+      // Show "1m Xs" format for 1-2 minutes
+      const minutes = Math.floor(seconds / 60);
+      const remainingSeconds = seconds % 60;
+      return `${minutes}m ${remainingSeconds}s`;
+    } else if (seconds < 600) {
+      // Show minutes and seconds for under 10 minutes
+      const minutes = Math.floor(seconds / 60);
+      const remainingSeconds = seconds % 60;
+      return `${minutes}m ${remainingSeconds}s`;
+    } else if (seconds < 3600) {
+      // Show just minutes for 10-60 minutes
+      const minutes = Math.round(seconds / 60);
+      return `~${minutes} min`;
+    } else {
+      // Show hours for longer times
+      const hours = Math.floor(seconds / 3600);
+      const minutes = Math.floor((seconds % 3600) / 60);
+      if (minutes > 0 && hours < 3) {
+        return `${hours}h ${minutes}m`;
+      }
+      return `~${hours} hour${hours > 1 ? 's' : ''}`;
+    }
+  }
+
+  /**
+   * Get urgency class based on time remaining
+   */
+  getTimeUrgencyClass(seconds) {
+    if (seconds <= 0) return 'text-danger fw-bold blink';
+    if (seconds < 10) return 'text-danger fw-bold blink';
+    if (seconds < 30) return 'text-danger fw-bold';
+    if (seconds < 60) return 'text-warning fw-bold';
+    if (seconds < 300) return 'text-warning';
+    if (seconds < 3600) return 'text-info';
+    return 'text-muted';
+  }
+
+  /**
+   * Get icon based on time urgency
+   */
+  getTimeIcon(seconds) {
+    if (seconds <= 0) return '🚨';
+    if (seconds < 10) return '🚨';
+    if (seconds < 30) return '⚠️';
+    if (seconds < 60) return '⏰';
+    if (seconds < 300) return '⏱️';
+    if (seconds < 3600) return '🕐';
+    return '📊';
   }
 
   /**
@@ -322,13 +402,29 @@ class PredictionDisplay {
   }
 }
 
-// Add CSS animation for pulsing
+// Add CSS animations for countdown and pulsing
 const style = document.createElement('style');
 style.textContent = `
   @keyframes pulse {
     0% { box-shadow: 0 0 0 0 rgba(220, 53, 69, 0.7); }
     70% { box-shadow: 0 0 0 10px rgba(220, 53, 69, 0); }
     100% { box-shadow: 0 0 0 0 rgba(220, 53, 69, 0); }
+  }
+  
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+  
+  .blink {
+    animation: blink 1s infinite;
+  }
+  
+  .countdown-critical {
+    font-size: 1.2em;
+    font-weight: bold;
+    color: #dc3545;
+    animation: blink 0.5s infinite;
   }
 `;
 document.head.appendChild(style);

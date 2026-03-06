@@ -1,3 +1,4 @@
+// index.js
 import 'dotenv/config';
 import http from 'http';
 import path from 'path';
@@ -13,23 +14,28 @@ import { setupSocket } from './socket.js';
 import { makeIngestRouter } from './routes/ingest.js';
 import { makeApiRouter } from './routes/api.js';
 
+// --- Load server config from .env ---
 const HTTP_PORT = Number(process.env.HTTP_PORT || 3000);
+const HTTP_HOST = process.env.HTTP_HOST || '0.0.0.0';
 
+// --- Resolve __dirname ---
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// --- Create DB pool from env ---
 const db = createPoolFromEnv();
 
+// --- Express & HTTP server ---
 const app = express();
 const server = http.createServer(app);
 
+// --- Socket.IO ---
 const io = new IOServer(server, {
-  cors: { origin: '*' } // LAN dev; restrict later if you want
+  cors: { origin: '*' } // LAN dev; restrict later in production
 });
-
 setupSocket(io);
 
-// CSP: allow Chart.js + Bootstrap via jsdelivr
+// --- Helmet + CSP ---
 app.use(
   helmet({
     contentSecurityPolicy: {
@@ -42,26 +48,30 @@ app.use(
         imgSrc: ["'self'", "data:"],
         fontSrc: ["'self'", "data:", "https://cdn.jsdelivr.net"]
       }
-    }
+    },
+    // Disable COOP & COEP to allow LAN IP access without HTTPS
+    crossOriginOpenerPolicy: false,
+    crossOriginEmbedderPolicy: false
   })
 );
 
+// --- JSON body parsing ---
 app.use(express.json({ limit: '200kb' }));
 
-// Serve dashboard
+// --- Serve dashboard static files ---
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
-// API (dashboard)
+// --- Dashboard API ---
 app.use('/api', makeApiRouter({ db }));
 
-// Rate-limit only ingest/config routes (mounted after dashboard API)
+// --- Rate-limit for ingest/config routes ---
 const ingestLimiter = rateLimit({
-  windowMs: 10 * 1000,
+  windowMs: 10 * 1000, // 10 seconds
   max: 80
 });
 app.use('/api', ingestLimiter, makeIngestRouter({ db, io }));
 
-// Health
+// --- Health check endpoint ---
 app.get('/health', async (req, res) => {
   try {
     await db.query('SELECT 1');
@@ -71,11 +81,13 @@ app.get('/health', async (req, res) => {
   }
 });
 
-// Start
-server.listen(HTTP_PORT, '0.0.0.0', () => {
-  console.log(`Dashboard: http://localhost:${HTTP_PORT}`);
-  console.log(`Health:     http://localhost:${HTTP_PORT}/health`);
+// --- Start server ---
+server.listen(HTTP_PORT, HTTP_HOST, () => {
+  const displayHost = HTTP_HOST === '0.0.0.0' ? 'localhost' : HTTP_HOST;
+  console.log(`Dashboard: http://${displayHost}:${HTTP_PORT}`);
+  console.log(`Health:     http://${displayHost}:${HTTP_PORT}/health`);
 });
 
+// --- Error handling ---
 process.on('unhandledRejection', (err) => console.error('unhandledRejection', err));
 process.on('uncaughtException', (err) => console.error('uncaughtException', err));
