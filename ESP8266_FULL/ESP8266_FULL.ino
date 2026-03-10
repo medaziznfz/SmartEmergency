@@ -60,6 +60,9 @@ float HUM_HIGH = 80.0;
 bool BUZZER_ENABLED   = true;
 bool RED_LIGHT_ENABLED = true;
 
+// System mode: 0=train (data collection only), 1=detection (full alerts)
+int SYSTEM_MODE = 1;  // Default to detection mode
+
 // ================= State =================
 bool isAlarmActive = false;
 bool redToggle = LOW;
@@ -275,6 +278,9 @@ void fetchConfig() {
       BUZZER_ENABLED    = doc["buzzer_enabled"].isNull()    ? true : (doc["buzzer_enabled"].as<int>() == 1);
       RED_LIGHT_ENABLED = doc["red_light_enabled"].isNull() ? true : (doc["red_light_enabled"].as<int>() == 1);
 
+      // System mode: 0=train, 1=detection (default to detection if not present)
+      SYSTEM_MODE = doc["system_mode"] | 1;
+
       int pullSec = doc["config_pull_interval_sec"] | 30;
       if (pullSec < 5) pullSec = 5;
       if (pullSec > 600) pullSec = 600;
@@ -290,7 +296,8 @@ void fetchConfig() {
       if (flashMs > 2000) flashMs = 2000;
       redFlashSpeedMs = (unsigned long)flashMs;
 
-      Serial.printf("CFG OK => gas=%d(%s) temp=%.1f(%s) flame=%d hum[%.1f..%.1f](%s) buzzer=%s redLight=%s pull=%lus send=%lus flash=%lums\n",
+      Serial.printf("CFG OK => mode=%s gas=%d(%s) temp=%.1f(%s) flame=%d hum[%.1f..%.1f](%s) buzzer=%s redLight=%s pull=%lus send=%lus flash=%lums\n",
+                    SYSTEM_MODE == 0 ? "TRAIN" : "DETECT",
                     GAS_THRESHOLD, GAS_ENABLED ? "on" : "off",
                     TEMP_THRESHOLD, TEMP_ENABLED ? "on" : "off",
                     FLAME_ENABLED, HUM_LOW, HUM_HIGH, HUM_ENABLED ? "on" : "off",
@@ -326,6 +333,17 @@ bool humidityBad() {
 }
 
 void checkSafety(unsigned long nowMs) {
+  // In train mode, skip all alarm logic - just collect data
+  if (SYSTEM_MODE == 0) {
+    // Train mode: ensure all alarms are off, just collect data
+    isAlarmActive = false;
+    digitalWrite(BUZZER, LOW);
+    digitalWrite(RED_LED_1, LOW);
+    digitalWrite(RED_LED_2, LOW);
+    return;
+  }
+
+  // Detection mode: normal alarm logic
   bool flameDetected = (lastFlame == LOW);
   bool gasHigh   = GAS_ENABLED   && (lastGas >= GAS_THRESHOLD);
   bool tempHigh  = TEMP_ENABLED  && (!isnan(lastT) && lastT >= TEMP_THRESHOLD);

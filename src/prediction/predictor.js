@@ -1,18 +1,37 @@
 /**
- * SmartEmergency Predictive Alarm System
- * Probability-based early warning with trend analysis
- * Gas prediction is gated: it only triggers when there is a big modification.
+ * SmartEmergency Predictive Alarm System v2.0
+ * Advanced prediction with trend analysis, EWMA smoothing, and acceleration detection
+ * Uses statistical methods for reliable time-to-alarm estimation
  */
 
 class PredictiveAlarmSystem {
   constructor() {
-    // No complex calculations needed - showing real-time data only
+    // Configuration for prediction sensitivity
+    this.config = {
+      // Minimum readings required for trend analysis
+      minReadingsForTrend: 5,
+      // Maximum readings to analyze (sliding window)
+      maxReadingsWindow: 30,
+      // EWMA smoothing factor (0.1 = smooth, 0.5 = responsive)
+      ewmaAlpha: 0.3,
+      // Minimum rate of change to consider (per second) - reduces noise
+      minRateThreshold: {
+        gas: 0.05,      // 0.05 units/sec = 3 units/min
+        temperature: 0.005, // 0.005°C/sec = 0.3°C/min
+        humidity: 0.01  // 0.01%/sec = 0.6%/min
+      },
+      // Trend consistency threshold (0-1, higher = stricter)
+      trendConsistencyThreshold: 0.6,
+      // Maximum prediction window (seconds)
+      maxPredictionWindow: 3600, // 1 hour
+      // Minimum prediction window to show (seconds)
+      minPredictionWindow: 10
+    };
   }
 
   /**
    * Generate prediction based on sensor position relative to thresholds
-   * Risk increases as sensors approach thresholds
-   * Time decreases as sensors get closer to triggering alarm
+   * Enhanced with trend analysis, smoothing, and per-sensor time estimates
    */
   generatePrediction(currentReading, history, thresholds) {
     if (!currentReading) {
@@ -28,20 +47,31 @@ class PredictiveAlarmSystem {
     // Risk level based on position (0-1 scale)
     const riskLevel = this.calculateRiskFromPosition(maxPosition);
     
-    // Time to alarm based on position and rate of change
-    const timeToAlarm = this.calculateTimeToAlarm(currentState, maxPosition, history);
+    // Enhanced: Analyze trends for each sensor
+    const trendAnalysis = this.analyzeTrends(currentState, history);
+    
+    // Enhanced: Calculate per-sensor time to alarm with confidence
+    const sensorPredictions = this.calculateSensorPredictions(currentState, trendAnalysis);
+    
+    // Get the most critical time to alarm
+    const timeToAlarm = this.getMostCriticalTimeToAlarm(sensorPredictions);
     
     // Probability is the same as position (closer = higher %)
     const probabilities = this.calculateProbabilitiesFromPosition(currentState);
+    
+    // Enhanced confidence based on trend consistency
+    const confidence = this.calculateEnhancedConfidence(maxPosition, trendAnalysis);
 
     return {
       timestamp: new Date().toISOString(),
       riskLevel,
       probabilities,
       timeToAlarm,
+      sensorPredictions, // New: per-sensor detailed predictions
+      trendAnalysis,     // New: trend information
       analysis: currentState,
-      confidence: this.calculateConfidence(maxPosition),
-      recommendations: this.generateRecommendations(riskLevel, currentState, timeToAlarm)
+      confidence,
+      recommendations: this.generateRecommendations(riskLevel, currentState, timeToAlarm, sensorPredictions)
     };
   }
 
@@ -227,6 +257,472 @@ class PredictiveAlarmSystem {
     );
     
     return probabilities;
+  }
+
+  // ============================================================
+  // ENHANCED PREDICTION METHODS v2.0
+  // ============================================================
+
+  /**
+   * Analyze trends for all sensors using EWMA smoothing and weighted regression
+   */
+  analyzeTrends(currentState, history) {
+    if (!history || history.length < this.config.minReadingsForTrend) {
+      return { gas: null, temperature: null, humidity: null, hasValidTrends: false };
+    }
+
+    // Use sliding window
+    const windowSize = Math.min(this.config.maxReadingsWindow, history.length);
+    const recentHistory = history.slice(-windowSize);
+
+    const trends = {
+      gas: this.analyzeSensorTrend(recentHistory, 'gas', currentState.gas),
+      temperature: this.analyzeSensorTrend(recentHistory, 'temperature', currentState.temperature),
+      humidity: this.analyzeHumidityTrend(recentHistory, currentState.humidity),
+      hasValidTrends: false
+    };
+
+    // Check if any valid trends exist
+    trends.hasValidTrends = (trends.gas?.isValid || trends.temperature?.isValid || trends.humidity?.isValid);
+
+    return trends;
+  }
+
+  /**
+   * Analyze trend for a single sensor with EWMA smoothing
+   */
+  analyzeSensorTrend(history, sensorName, sensorState) {
+    if (!sensorState.enabled) {
+      return { isValid: false, reason: 'disabled' };
+    }
+
+    // Extract data points
+    const dataPoints = this.extractDataPoints(history, sensorName);
+    
+    if (dataPoints.length < this.config.minReadingsForTrend) {
+      return { isValid: false, reason: 'insufficient_data' };
+    }
+
+    // Apply EWMA smoothing to reduce noise
+    const smoothedPoints = this.applyEWMA(dataPoints);
+
+    // Calculate weighted linear regression (recent points weighted more)
+    const regression = this.calculateWeightedRegression(smoothedPoints);
+    
+    // Calculate trend consistency (how stable is the trend direction)
+    const consistency = this.calculateTrendConsistency(smoothedPoints, regression.slope);
+
+    // Get minimum rate threshold for this sensor
+    const minRate = this.config.minRateThreshold[sensorName] || 0.01;
+
+    // Check if rate exceeds minimum threshold (reduces noise sensitivity)
+    const isSignificantRate = Math.abs(regression.slope) > minRate;
+    const isConsistent = consistency >= this.config.trendConsistencyThreshold;
+    const isTrendingTowardsAlarm = regression.slope > 0; // For gas/temp, increasing is bad
+
+    return {
+      isValid: isSignificantRate && isConsistent,
+      slope: regression.slope,           // Rate per second
+      ratePerMinute: regression.slope * 60,
+      intercept: regression.intercept,
+      r2: regression.r2,                 // Goodness of fit
+      consistency,                        // Trend consistency (0-1)
+      direction: regression.slope > 0 ? 'increasing' : 'decreasing',
+      isAccelerating: this.detectAcceleration(smoothedPoints),
+      acceleration: this.calculateAcceleration(smoothedPoints),
+      smoothedValues: smoothedPoints.slice(-5).map(p => p.smoothedValue),
+      isSignificantRate,
+      isTrendingTowardsAlarm,
+      reason: !isSignificantRate ? 'rate_too_low' : (!isConsistent ? 'inconsistent_trend' : 'valid')
+    };
+  }
+
+  /**
+   * Analyze humidity trend (handles both low and high boundaries)
+   */
+  analyzeHumidityTrend(history, humidityState) {
+    if (!humidityState.enabled) {
+      return { isValid: false, reason: 'disabled' };
+    }
+
+    const dataPoints = this.extractDataPoints(history, 'humidity');
+    
+    if (dataPoints.length < this.config.minReadingsForTrend) {
+      return { isValid: false, reason: 'insufficient_data' };
+    }
+
+    const smoothedPoints = this.applyEWMA(dataPoints);
+    const regression = this.calculateWeightedRegression(smoothedPoints);
+    const consistency = this.calculateTrendConsistency(smoothedPoints, regression.slope);
+
+    const minRate = this.config.minRateThreshold.humidity;
+    const isSignificantRate = Math.abs(regression.slope) > minRate;
+    const isConsistent = consistency >= this.config.trendConsistencyThreshold;
+
+    // Determine which boundary we're approaching
+    const current = humidityState.current;
+    const midpoint = (humidityState.lowThreshold + humidityState.highThreshold) / 2;
+    const approachingLow = current < midpoint && regression.slope < 0;
+    const approachingHigh = current >= midpoint && regression.slope > 0;
+    const isTrendingTowardsAlarm = approachingLow || approachingHigh;
+
+    return {
+      isValid: isSignificantRate && isConsistent && isTrendingTowardsAlarm,
+      slope: regression.slope,
+      ratePerMinute: regression.slope * 60,
+      consistency,
+      direction: regression.slope > 0 ? 'increasing' : 'decreasing',
+      targetBoundary: approachingLow ? 'low' : (approachingHigh ? 'high' : 'none'),
+      isTrendingTowardsAlarm,
+      reason: !isSignificantRate ? 'rate_too_low' : (!isConsistent ? 'inconsistent_trend' : (!isTrendingTowardsAlarm ? 'moving_to_safe' : 'valid'))
+    };
+  }
+
+  /**
+   * Extract data points from history for a specific sensor
+   */
+  extractDataPoints(history, sensorName) {
+    const dataPoints = [];
+    const sensorKey = { gas: 'g', temperature: 't', humidity: 'h', flame: 'f' }[sensorName];
+
+    for (let i = 0; i < history.length; i++) {
+      const reading = history[i];
+      const value = reading[sensorKey];
+      const timestamp = reading.ts ? new Date(reading.ts).getTime() : Date.now() - (history.length - i) * 1000;
+
+      if (value !== null && value !== undefined && !isNaN(value)) {
+        dataPoints.push({ value: Number(value), timestamp, index: i });
+      }
+    }
+
+    return dataPoints;
+  }
+
+  /**
+   * Apply Exponential Weighted Moving Average for smoothing
+   */
+  applyEWMA(dataPoints) {
+    if (dataPoints.length === 0) return [];
+
+    const alpha = this.config.ewmaAlpha;
+    const smoothed = [];
+    let ewma = dataPoints[0].value;
+
+    for (let i = 0; i < dataPoints.length; i++) {
+      ewma = alpha * dataPoints[i].value + (1 - alpha) * ewma;
+      smoothed.push({
+        ...dataPoints[i],
+        smoothedValue: ewma,
+        rawValue: dataPoints[i].value
+      });
+    }
+
+    return smoothed;
+  }
+
+  /**
+   * Calculate weighted linear regression (more weight on recent points)
+   */
+  calculateWeightedRegression(dataPoints) {
+    if (dataPoints.length < 2) {
+      return { slope: 0, intercept: 0, r2: 0 };
+    }
+
+    const n = dataPoints.length;
+    const t0 = dataPoints[0].timestamp;
+
+    // Normalize timestamps to seconds and assign weights (exponential weighting)
+    let sumW = 0, sumWX = 0, sumWY = 0, sumWXX = 0, sumWXY = 0, sumWYY = 0;
+
+    for (let i = 0; i < n; i++) {
+      const x = (dataPoints[i].timestamp - t0) / 1000; // Time in seconds
+      const y = dataPoints[i].smoothedValue || dataPoints[i].value;
+      // Exponential weight: recent points get higher weight
+      const w = Math.exp((i - n + 1) / (n * 0.5)); // Decay factor
+
+      sumW += w;
+      sumWX += w * x;
+      sumWY += w * y;
+      sumWXX += w * x * x;
+      sumWXY += w * x * y;
+      sumWYY += w * y * y;
+    }
+
+    const denominator = sumW * sumWXX - sumWX * sumWX;
+    if (Math.abs(denominator) < 1e-10) {
+      return { slope: 0, intercept: sumWY / sumW, r2: 0 };
+    }
+
+    const slope = (sumW * sumWXY - sumWX * sumWY) / denominator;
+    const intercept = (sumWY - slope * sumWX) / sumW;
+
+    // Calculate R² (coefficient of determination)
+    const meanY = sumWY / sumW;
+    let ssTot = 0, ssRes = 0;
+    for (let i = 0; i < n; i++) {
+      const x = (dataPoints[i].timestamp - t0) / 1000;
+      const y = dataPoints[i].smoothedValue || dataPoints[i].value;
+      const w = Math.exp((i - n + 1) / (n * 0.5));
+      const yPred = slope * x + intercept;
+      ssTot += w * (y - meanY) * (y - meanY);
+      ssRes += w * (y - yPred) * (y - yPred);
+    }
+    const r2 = ssTot > 0 ? 1 - (ssRes / ssTot) : 0;
+
+    return { slope, intercept, r2: Math.max(0, Math.min(1, r2)) };
+  }
+
+  /**
+   * Calculate trend consistency (how stable is the direction)
+   */
+  calculateTrendConsistency(dataPoints, overallSlope) {
+    if (dataPoints.length < 3) return 0;
+
+    let consistentCount = 0;
+    const expectedDirection = overallSlope >= 0 ? 1 : -1;
+
+    for (let i = 1; i < dataPoints.length; i++) {
+      const localChange = (dataPoints[i].smoothedValue || dataPoints[i].value) - 
+                          (dataPoints[i-1].smoothedValue || dataPoints[i-1].value);
+      const localDirection = localChange >= 0 ? 1 : -1;
+      
+      if (localDirection === expectedDirection || Math.abs(localChange) < 0.001) {
+        consistentCount++;
+      }
+    }
+
+    return consistentCount / (dataPoints.length - 1);
+  }
+
+  /**
+   * Detect if the rate is accelerating (getting worse faster)
+   */
+  detectAcceleration(dataPoints) {
+    if (dataPoints.length < 6) return false;
+
+    // Split into two halves and compare rates
+    const mid = Math.floor(dataPoints.length / 2);
+    const firstHalf = dataPoints.slice(0, mid);
+    const secondHalf = dataPoints.slice(mid);
+
+    const firstRate = this.calculateWeightedRegression(firstHalf).slope;
+    const secondRate = this.calculateWeightedRegression(secondHalf).slope;
+
+    // Accelerating if second half rate is significantly higher
+    return secondRate > firstRate * 1.2;
+  }
+
+  /**
+   * Calculate acceleration (rate of change of rate)
+   */
+  calculateAcceleration(dataPoints) {
+    if (dataPoints.length < 6) return 0;
+
+    const mid = Math.floor(dataPoints.length / 2);
+    const firstHalf = dataPoints.slice(0, mid);
+    const secondHalf = dataPoints.slice(mid);
+
+    const firstRate = this.calculateWeightedRegression(firstHalf).slope;
+    const secondRate = this.calculateWeightedRegression(secondHalf).slope;
+
+    // Time span of each half
+    const halfDuration = (dataPoints[dataPoints.length - 1].timestamp - dataPoints[0].timestamp) / 2000;
+    if (halfDuration <= 0) return 0;
+
+    return (secondRate - firstRate) / halfDuration; // Acceleration in units/sec²
+  }
+
+  /**
+   * Calculate per-sensor predictions with time to alarm
+   */
+  calculateSensorPredictions(currentState, trendAnalysis) {
+    const predictions = {};
+
+    // Gas prediction
+    if (currentState.gas.enabled && trendAnalysis.gas?.isValid) {
+      predictions.gas = this.calculateSensorTimeToAlarm(
+        currentState.gas.current,
+        currentState.gas.threshold,
+        currentState.gas.safeBaseline,
+        trendAnalysis.gas
+      );
+    }
+
+    // Temperature prediction
+    if (currentState.temperature.enabled && trendAnalysis.temperature?.isValid) {
+      predictions.temperature = this.calculateSensorTimeToAlarm(
+        currentState.temperature.current,
+        currentState.temperature.threshold,
+        currentState.temperature.safeBaseline,
+        trendAnalysis.temperature
+      );
+    }
+
+    // Humidity prediction
+    if (currentState.humidity.enabled && trendAnalysis.humidity?.isValid) {
+      const targetThreshold = trendAnalysis.humidity.targetBoundary === 'low' 
+        ? currentState.humidity.lowThreshold 
+        : currentState.humidity.highThreshold;
+      
+      predictions.humidity = this.calculateHumidityTimeToAlarm(
+        currentState.humidity.current,
+        targetThreshold,
+        trendAnalysis.humidity
+      );
+    }
+
+    return predictions;
+  }
+
+  /**
+   * Calculate time to alarm for a sensor with acceleration consideration
+   */
+  calculateSensorTimeToAlarm(current, threshold, baseline, trend) {
+    if (!trend || !trend.isValid || !trend.isTrendingTowardsAlarm) {
+      return null;
+    }
+
+    const distance = threshold - current;
+    if (distance <= 0) {
+      return { timeSeconds: 0, confidence: 1, method: 'at_threshold' };
+    }
+
+    const rate = trend.slope; // per second
+    if (rate <= 0) {
+      return null; // Not approaching threshold
+    }
+
+    // Base time calculation
+    let timeSeconds = distance / rate;
+
+    // Adjust for acceleration if detected
+    if (trend.isAccelerating && trend.acceleration > 0) {
+      // Use kinematic equation: d = v*t + 0.5*a*t²
+      // Solve for t using quadratic formula
+      const a = 0.5 * trend.acceleration;
+      const b = rate;
+      const c = -distance;
+      const discriminant = b * b - 4 * a * c;
+      
+      if (discriminant >= 0) {
+        const t1 = (-b + Math.sqrt(discriminant)) / (2 * a);
+        const t2 = (-b - Math.sqrt(discriminant)) / (2 * a);
+        const adjustedTime = Math.min(t1 > 0 ? t1 : Infinity, t2 > 0 ? t2 : Infinity);
+        if (adjustedTime < Infinity && adjustedTime < timeSeconds) {
+          timeSeconds = adjustedTime;
+        }
+      }
+    }
+
+    // Validate prediction window
+    if (timeSeconds < this.config.minPredictionWindow || timeSeconds > this.config.maxPredictionWindow) {
+      return null;
+    }
+
+    // Calculate confidence based on trend quality
+    const confidence = Math.min(1, (trend.consistency + (trend.r2 || 0)) / 2);
+
+    return {
+      timeSeconds: Math.round(timeSeconds),
+      confidence,
+      ratePerMinute: trend.ratePerMinute,
+      isAccelerating: trend.isAccelerating,
+      method: trend.isAccelerating ? 'accelerated' : 'linear'
+    };
+  }
+
+  /**
+   * Calculate time to alarm for humidity (handles direction)
+   */
+  calculateHumidityTimeToAlarm(current, targetThreshold, trend) {
+    if (!trend || !trend.isValid) {
+      return null;
+    }
+
+    let distance;
+    if (trend.targetBoundary === 'low') {
+      distance = current - targetThreshold;
+      if (distance <= 0 || trend.slope >= 0) return null;
+    } else {
+      distance = targetThreshold - current;
+      if (distance <= 0 || trend.slope <= 0) return null;
+    }
+
+    const rate = Math.abs(trend.slope);
+    if (rate < this.config.minRateThreshold.humidity) {
+      return null;
+    }
+
+    const timeSeconds = distance / rate;
+
+    if (timeSeconds < this.config.minPredictionWindow || timeSeconds > this.config.maxPredictionWindow) {
+      return null;
+    }
+
+    const confidence = Math.min(1, trend.consistency);
+
+    return {
+      timeSeconds: Math.round(timeSeconds),
+      confidence,
+      ratePerMinute: trend.ratePerMinute,
+      targetBoundary: trend.targetBoundary,
+      method: 'linear'
+    };
+  }
+
+  /**
+   * Get the most critical (shortest) time to alarm from all sensors
+   */
+  getMostCriticalTimeToAlarm(sensorPredictions) {
+    let minTime = null;
+
+    for (const [sensor, prediction] of Object.entries(sensorPredictions)) {
+      if (prediction && prediction.timeSeconds !== null) {
+        // Only consider predictions with reasonable confidence
+        if (prediction.confidence >= 0.5) {
+          if (minTime === null || prediction.timeSeconds < minTime) {
+            minTime = prediction.timeSeconds;
+          }
+        }
+      }
+    }
+
+    return minTime;
+  }
+
+  /**
+   * Calculate enhanced confidence based on position and trend quality
+   */
+  calculateEnhancedConfidence(maxPosition, trendAnalysis) {
+    // Base confidence from position
+    let confidence = maxPosition;
+
+    // Boost confidence if trends are consistent
+    if (trendAnalysis.hasValidTrends) {
+      let avgConsistency = 0;
+      let validCount = 0;
+
+      if (trendAnalysis.gas?.isValid) {
+        avgConsistency += trendAnalysis.gas.consistency;
+        validCount++;
+      }
+      if (trendAnalysis.temperature?.isValid) {
+        avgConsistency += trendAnalysis.temperature.consistency;
+        validCount++;
+      }
+      if (trendAnalysis.humidity?.isValid) {
+        avgConsistency += trendAnalysis.humidity.consistency;
+        validCount++;
+      }
+
+      if (validCount > 0) {
+        avgConsistency /= validCount;
+        // Blend position confidence with trend confidence
+        confidence = confidence * 0.6 + avgConsistency * 0.4;
+      }
+    }
+
+    return Math.max(0, Math.min(1, confidence));
   }
 
   /**
@@ -497,36 +993,56 @@ class PredictiveAlarmSystem {
   }
 
   /**
-   * Generate recommendations based on risk level and time to alarm
+   * Generate recommendations based on risk level, time to alarm, and sensor predictions
    */
-  generateRecommendations(riskLevel, state, timeToAlarm) {
+  generateRecommendations(riskLevel, state, timeToAlarm, sensorPredictions = {}) {
     const recommendations = [];
 
     // Add specific sensor warnings based on position
     if (state.gas.position >= 0.8 && state.gas.enabled) {
+      const pred = sensorPredictions.gas;
+      let extraInfo = '';
+      if (pred?.timeSeconds) {
+        extraInfo = pred.isAccelerating ? ' (accelerating!)' : '';
+      }
       recommendations.push({
         priority: "URGENT",
-        message: `Gas at ${Math.round(state.gas.position * 100)}% of threshold (${state.gas.current}/${state.gas.threshold})`,
+        message: `Gas at ${Math.round(state.gas.position * 100)}% of threshold (${state.gas.current}/${state.gas.threshold})${extraInfo}`,
         action: "Critical level - check for gas leaks immediately"
       });
     } else if (state.gas.position >= 0.5 && state.gas.enabled) {
+      const pred = sensorPredictions.gas;
+      let rateInfo = '';
+      if (pred?.ratePerMinute) {
+        rateInfo = ` (+${pred.ratePerMinute.toFixed(1)}/min)`;
+      }
       recommendations.push({
         priority: "WARNING",
-        message: `Gas rising: ${Math.round(state.gas.position * 100)}% to threshold`,
+        message: `Gas rising: ${Math.round(state.gas.position * 100)}% to threshold${rateInfo}`,
         action: "Monitor closely and ensure ventilation"
       });
     }
 
     if (state.temperature.position >= 0.8 && state.temperature.enabled) {
+      const pred = sensorPredictions.temperature;
+      let extraInfo = '';
+      if (pred?.isAccelerating) {
+        extraInfo = ' (accelerating!)';
+      }
       recommendations.push({
         priority: "URGENT",
-        message: `Temperature at ${Math.round(state.temperature.position * 100)}% of threshold (${state.temperature.current}°C/${state.temperature.threshold}°C)`,
+        message: `Temperature at ${Math.round(state.temperature.position * 100)}% of threshold (${state.temperature.current}°C/${state.temperature.threshold}°C)${extraInfo}`,
         action: "Critical temperature - check cooling systems"
       });
     } else if (state.temperature.position >= 0.5 && state.temperature.enabled) {
+      const pred = sensorPredictions.temperature;
+      let rateInfo = '';
+      if (pred?.ratePerMinute) {
+        rateInfo = ` (+${pred.ratePerMinute.toFixed(2)}°C/min)`;
+      }
       recommendations.push({
         priority: "WARNING",
-        message: `Temperature rising: ${Math.round(state.temperature.position * 100)}% to limit`,
+        message: `Temperature rising: ${Math.round(state.temperature.position * 100)}% to limit${rateInfo}`,
         action: "Check heat sources and ventilation"
       });
     }
@@ -557,63 +1073,28 @@ class PredictiveAlarmSystem {
         message: "FLAME DETECTED!",
         action: "Immediate action required - fire emergency!"
       });
-    } else if (state.flame.position >= 0.5 && state.flame.enabled) {
-      recommendations.push({
-        priority: "WARNING",
-        message: "Intermittent flame detection",
-        action: "Inspect for fire hazards"
-      });
     }
 
-    // Add time-based warning with countdown emphasis
+    // Enhanced time-based warnings with per-sensor breakdown
     if (timeToAlarm !== null && timeToAlarm !== undefined && timeToAlarm >= 0) {
-      let timeMessage, timeAction, priority;
-      
-      if (timeToAlarm === 0) {
-        timeMessage = `🚨 ALARM TRIGGERED NOW!`;
-        timeAction = "IMMEDIATE EMERGENCY ACTION!";
-        priority = "CRITICAL";
-      } else if (timeToAlarm <= 10) {
-        timeMessage = `🚨 ALARM IN ${timeToAlarm} SECONDS!`;
-        timeAction = "EVACUATE OR TAKE IMMEDIATE ACTION!";
-        priority = "CRITICAL";
-      } else if (timeToAlarm <= 30) {
-        timeMessage = `⚠️ ALARM IN ${timeToAlarm} SECONDS`;
-        timeAction = "Take immediate preventive action now!";
-        priority = "CRITICAL";
-      } else if (timeToAlarm < 60) {
-        timeMessage = `⏰ Alarm in ${timeToAlarm} seconds`;
-        timeAction = "Prepare safety measures immediately";
-        priority = "HIGH";
-      } else if (timeToAlarm < 120) {
-        const minutes = Math.floor(timeToAlarm / 60);
-        const seconds = timeToAlarm % 60;
-        timeMessage = `⏱️ Alarm in ${minutes}m ${seconds}s`;
-        timeAction = "Monitor closely and take preventive action";
-        priority = "HIGH";
-      } else if (timeToAlarm < 600) {
-        const minutes = Math.floor(timeToAlarm / 60);
-        const seconds = timeToAlarm % 60;
-        timeMessage = `Risk increasing - alarm in ${minutes}m ${seconds}s`;
-        timeAction = "Investigate cause and address issue";
-        priority = "MEDIUM";
-      } else if (timeToAlarm < 3600) {
-        const minutes = Math.round(timeToAlarm / 60);
-        timeMessage = `Trend detected - alarm possible in ~${minutes} minutes`;
-        timeAction = "Monitor situation and address root cause";
-        priority = "MEDIUM";
-      } else {
-        const hours = Math.round(timeToAlarm / 3600);
-        timeMessage = `Long-term trend - alarm possible in ~${hours} hour(s)`;
-        timeAction = "Continue monitoring";
-        priority = "LOW";
+      const timeRec = this.generateTimeRecommendation(timeToAlarm, sensorPredictions);
+      if (timeRec) {
+        recommendations.push(timeRec);
       }
-      
-      recommendations.push({
-        priority: priority,
-        message: timeMessage,
-        action: timeAction
-      });
+    }
+
+    // Add per-sensor time estimates if available and different from main
+    for (const [sensor, pred] of Object.entries(sensorPredictions)) {
+      if (pred && pred.timeSeconds && pred.timeSeconds !== timeToAlarm && pred.timeSeconds > 60) {
+        const mins = Math.floor(pred.timeSeconds / 60);
+        const secs = pred.timeSeconds % 60;
+        const accel = pred.isAccelerating ? ' (accelerating)' : '';
+        recommendations.push({
+          priority: "INFO",
+          message: `${sensor.charAt(0).toUpperCase() + sensor.slice(1)}: ~${mins}m ${secs}s to threshold${accel}`,
+          action: `Rate: ${Math.abs(pred.ratePerMinute || 0).toFixed(2)}/min`
+        });
+      }
     }
 
     // General risk level recommendation
@@ -646,6 +1127,72 @@ class PredictiveAlarmSystem {
     }
 
     return recommendations;
+  }
+
+  /**
+   * Generate time-based recommendation with intelligent formatting
+   */
+  generateTimeRecommendation(timeToAlarm, sensorPredictions) {
+    // Find which sensor is most critical
+    let criticalSensor = null;
+    for (const [sensor, pred] of Object.entries(sensorPredictions)) {
+      if (pred && pred.timeSeconds === timeToAlarm) {
+        criticalSensor = sensor;
+        break;
+      }
+    }
+
+    const sensorLabel = criticalSensor ? ` (${criticalSensor})` : '';
+    const pred = criticalSensor ? sensorPredictions[criticalSensor] : null;
+    const accelNote = pred?.isAccelerating ? ' ⚡' : '';
+
+    let timeMessage, timeAction, priority;
+    
+    if (timeToAlarm === 0) {
+      timeMessage = `🚨 ALARM TRIGGERED NOW!${sensorLabel}`;
+      timeAction = "IMMEDIATE EMERGENCY ACTION!";
+      priority = "CRITICAL";
+    } else if (timeToAlarm <= 10) {
+      timeMessage = `🚨 ALARM IN ${timeToAlarm}s!${sensorLabel}${accelNote}`;
+      timeAction = "EVACUATE OR TAKE IMMEDIATE ACTION!";
+      priority = "CRITICAL";
+    } else if (timeToAlarm <= 30) {
+      timeMessage = `⚠️ ALARM IN ${timeToAlarm}s${sensorLabel}${accelNote}`;
+      timeAction = "Take immediate preventive action now!";
+      priority = "CRITICAL";
+    } else if (timeToAlarm < 60) {
+      timeMessage = `⏰ Alarm in ${timeToAlarm}s${sensorLabel}${accelNote}`;
+      timeAction = "Prepare safety measures immediately";
+      priority = "HIGH";
+    } else if (timeToAlarm < 120) {
+      const minutes = Math.floor(timeToAlarm / 60);
+      const seconds = timeToAlarm % 60;
+      timeMessage = `⏱️ Alarm in ${minutes}m ${seconds}s${sensorLabel}${accelNote}`;
+      timeAction = "Monitor closely and take preventive action";
+      priority = "HIGH";
+    } else if (timeToAlarm < 600) {
+      const minutes = Math.floor(timeToAlarm / 60);
+      const seconds = timeToAlarm % 60;
+      timeMessage = `Predicted alarm in ${minutes}m ${seconds}s${sensorLabel}${accelNote}`;
+      timeAction = "Investigate cause and address issue";
+      priority = "MEDIUM";
+    } else if (timeToAlarm < 3600) {
+      const minutes = Math.round(timeToAlarm / 60);
+      timeMessage = `Trend analysis: ~${minutes} min to alarm${sensorLabel}`;
+      timeAction = "Monitor situation and address root cause";
+      priority = "MEDIUM";
+    } else {
+      const hours = (timeToAlarm / 3600).toFixed(1);
+      timeMessage = `Long-term projection: ~${hours}h${sensorLabel}`;
+      timeAction = "Continue monitoring";
+      priority = "LOW";
+    }
+    
+    return {
+      priority,
+      message: timeMessage,
+      action: timeAction
+    };
   }
 
   getDefaultPrediction() {

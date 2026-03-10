@@ -43,7 +43,7 @@ export function makeIngestRouter({ db, io }) {
 
   async function getOrCreateThresholds(deviceId) {
     const [rows] = await db.query(
-      `SELECT gas_threshold, gas_enabled, temp_threshold, temp_enabled, flame_enabled,
+      `SELECT system_mode, gas_threshold, gas_enabled, temp_threshold, temp_enabled, flame_enabled,
               humidity_low_threshold, humidity_high_threshold, humidity_enabled,
               buzzer_enabled, red_light_enabled, red_led_flash_speed_ms, config_pull_interval_sec, send_interval_sec,
               gas_safe_baseline, temp_safe_baseline, humidity_safe_baseline
@@ -54,6 +54,7 @@ export function makeIngestRouter({ db, io }) {
     if (rows.length) {
       const r = rows[0];
       return {
+        system_mode: Number(r.system_mode ?? 1),
         gas_threshold: Number(r.gas_threshold),
         gas_enabled: Number(r.gas_enabled ?? 1),
         temp_threshold: Number(r.temp_threshold),
@@ -76,15 +77,16 @@ export function makeIngestRouter({ db, io }) {
 
     await db.query(
       `INSERT INTO thresholds
-       (device_id, gas_threshold, gas_enabled, temp_threshold, temp_enabled, flame_enabled,
+       (device_id, system_mode, gas_threshold, gas_enabled, temp_threshold, temp_enabled, flame_enabled,
         humidity_low_threshold, humidity_high_threshold, humidity_enabled, buzzer_enabled, red_light_enabled, 
         red_led_flash_speed_ms, config_pull_interval_sec, send_interval_sec,
         gas_safe_baseline, temp_safe_baseline, humidity_safe_baseline)
-       VALUES (?, 400, 1, 60.00, 1, 1, 20.00, 80.00, 0, 1, 1, 200, 30, 1, 100, 25.00, 50.00)`,
+       VALUES (?, 1, 400, 1, 60.00, 1, 1, 20.00, 80.00, 0, 1, 1, 200, 30, 1, 100, 25.00, 50.00)`,
       [deviceId]
     );
 
     return {
+      system_mode: 1,
       gas_threshold: 400,
       gas_enabled: 1,
       temp_threshold: 60.0,
@@ -172,6 +174,7 @@ export function makeIngestRouter({ db, io }) {
       return res.json({
         ok: true,
         uid,
+        system_mode: Number(th.system_mode),
         gas_threshold: Number(th.gas_threshold),
         gas_enabled: Number(th.gas_enabled),
         temp_threshold: Number(th.temp_threshold),
@@ -226,20 +229,25 @@ export function makeIngestRouter({ db, io }) {
       if (!deviceId) return res.status(500).json({ ok: false, error: 'Device error' });
 
       const th = await getOrCreateThresholds(deviceId);
+      const isTrainMode = th.system_mode === 0;
 
       // Compute server-side triggers (per-device thresholds; only if trigger is enabled)
-      const flameDetected = Number(th.flame_enabled) === 1 && Number(f) === 0;
-      const gasHigh = Number(th.gas_enabled) === 1 && Number(g) >= Number(th.gas_threshold);
-      const tempHigh = Number(th.temp_enabled) === 1 && Number(t) >= Number(th.temp_threshold);
+      // In train mode, we don't compute any triggers - just collect data
+      const flameDetected = !isTrainMode && Number(th.flame_enabled) === 1 && Number(f) === 0;
+      const gasHigh = !isTrainMode && Number(th.gas_enabled) === 1 && Number(g) >= Number(th.gas_threshold);
+      const tempHigh = !isTrainMode && Number(th.temp_enabled) === 1 && Number(t) >= Number(th.temp_threshold);
 
-      const humEnabled = Number(th.humidity_enabled) === 1;
+      const humEnabled = !isTrainMode && Number(th.humidity_enabled) === 1;
       const humLow = Number(th.humidity_low_threshold);
       const humHigh = Number(th.humidity_high_threshold);
       const humidityBad = humEnabled && (Number(h) < humLow || Number(h) > humHigh);
 
-      const alarmComputed = (flameDetected || gasHigh || tempHigh || humidityBad) ? 1 : 0;
+      // In train mode, alarm is always 0
+      const alarmComputed = isTrainMode ? 0 : (flameDetected || gasHigh || tempHigh || humidityBad) ? 1 : 0;
 
-      const triggersNow = { flame: flameDetected, gas: gasHigh, temp: tempHigh, humidity: humidityBad };
+      const triggersNow = isTrainMode 
+        ? { flame: false, gas: false, temp: false, humidity: false } 
+        : { flame: flameDetected, gas: gasHigh, temp: tempHigh, humidity: humidityBad };
 
       // Hysteresis: require 2 consecutive same-state readings before start/close alarm event (stops blinking)
       const [[devRow]] = await db.query(
@@ -272,28 +280,32 @@ export function makeIngestRouter({ db, io }) {
         [deviceId, h, t, g, f, alarmComputed, JSON.stringify(triggersNow), alarmDevice]
       );
 
-      // Alarm events: only start after confirmed danger, only close after confirmed safe
-      const openEvent = await getOpenAlarmEvent(deviceId);
+      // Alarm events: only process if NOT in train mode
+      // In train mode, skip all alarm event logic - just collect data
+      if (!isTrainMode) {
+        const openEvent = await getOpenAlarmEvent(deviceId);
 
-      if (alarmConfirmed) {
-        if (!openEvent) {
-          await startAlarmEvent(deviceId, triggersNow, { h, t, g });
-        } else {
-          const oldTriggers = parseJSONMaybe(openEvent.triggers) || {};
-          const union = {
-            flame: Boolean(oldTriggers.flame) || flameDetected,
-            gas: Boolean(oldTriggers.gas) || gasHigh,
-            temp: Boolean(oldTriggers.temp) || tempHigh,
-            humidity: Boolean(oldTriggers.humidity) || humidityBad
-          };
-          await updateAlarmEvent(openEvent, union, { h, t, g });
+        if (alarmConfirmed) {
+          if (!openEvent) {
+            await startAlarmEvent(deviceId, triggersNow, { h, t, g });
+          } else {
+            const oldTriggers = parseJSONMaybe(openEvent.triggers) || {};
+            const union = {
+              flame: Boolean(oldTriggers.flame) || flameDetected,
+              gas: Boolean(oldTriggers.gas) || gasHigh,
+              temp: Boolean(oldTriggers.temp) || tempHigh,
+              humidity: Boolean(oldTriggers.humidity) || humidityBad
+            };
+            await updateAlarmEvent(openEvent, union, { h, t, g });
+          }
+        } else if (safeConfirmed && openEvent) {
+          await closeAlarmEvent(openEvent.id);
         }
-      } else if (safeConfirmed && openEvent) {
-        await closeAlarmEvent(openEvent.id);
       }
 
       // Generate predictive alarm analysis using recent history
-      const prediction = generatePrediction(deviceId, { h, t, g, f }, th);
+      // In train mode, skip prediction as well
+      const prediction = isTrainMode ? null : generatePrediction(deviceId, { h, t, g, f }, th);
 
       const payload = {
         uid,
@@ -303,6 +315,7 @@ export function makeIngestRouter({ db, io }) {
         alarm_device: alarmDevice,
         triggers: triggersNow,
         prediction, // Add prediction to payload
+        system_mode: th.system_mode, // Include mode in payload for dashboard
         thresholds: {
           gas_threshold: Number(th.gas_threshold),
           gas_enabled: Number(th.gas_enabled),

@@ -12,7 +12,7 @@ import { Server as IOServer } from 'socket.io';
 import { createPoolFromEnv } from './db.js';
 import { setupSocket } from './socket.js';
 import { makeIngestRouter } from './routes/ingest.js';
-import { makeApiRouter } from './routes/api.js';
+import { makeApiRouter, runAIThresholdUpdates } from './routes/api.js';
 
 // --- Load server config from .env ---
 const HTTP_PORT = Number(process.env.HTTP_PORT || 3000);
@@ -87,6 +87,16 @@ server.listen(HTTP_PORT, HTTP_HOST, () => {
   console.log(`Dashboard: http://${displayHost}:${HTTP_PORT}`);
   console.log(`Health:     http://${displayHost}:${HTTP_PORT}/health`);
 });
+
+// --- Background job: AI threshold auto-update (runs every minute) ---
+const AI_UPDATE_CHECK_INTERVAL = 60 * 1000; // Check every 1 minute
+setInterval(async () => {
+  const result = await runAIThresholdUpdates(db);
+  if (result.updated > 0) {
+    console.log(`[AI Auto-Update] Updated ${result.updated} device(s)`);
+  }
+}, AI_UPDATE_CHECK_INTERVAL);
+console.log('[AI Auto-Update] Background job started (checking every 60s)');
 
 // --- Error handling ---
 process.on('unhandledRejection', (err) => console.error('unhandledRejection', err));

@@ -22,6 +22,9 @@
   <main class="container py-4">
     <!-- Dashboard Tab -->
     <section id="tab-dashboard" class="tab-pane active">
+      <div class="mb-3">
+        <span id="dashboard-mode-badge" class="badge bg-success fs-6">Detection Mode</span>
+      </div>
       <div id="dashboard-devices" class="row g-3"></div>
       <div class="dashboard-realtime-row row g-4 mt-2">
         <div class="col-12">
@@ -162,8 +165,152 @@
                 <select id="config-device-select" class="form-select"></select>
               </div>
 
-              <div class="config-section">
+              <!-- System Mode Selection -->
+              <div class="config-section mb-4">
+                <h6 class="config-section-title">System Mode</h6>
+                <div class="threshold-mode-cards mb-3">
+                  <label class="threshold-mode-card" data-sysmode="0">
+                    <input type="radio" name="config-system-mode" id="config-mode-train" value="0">
+                    <span class="mode-icon">🎯</span>
+                    <div class="mode-title">Train Mode</div>
+                    <div class="mode-desc">Data collection only, no alerts</div>
+                  </label>
+                  <label class="threshold-mode-card active" data-sysmode="1">
+                    <input type="radio" name="config-system-mode" id="config-mode-detection" value="1" checked>
+                    <span class="mode-icon">🛡️</span>
+                    <div class="mode-title">Detection Mode</div>
+                    <div class="mode-desc">Full monitoring with alerts</div>
+                  </label>
+                </div>
+                <div id="config-mode-warning" class="alert alert-warning mt-2 d-none">
+                  <strong>⚠️ Train Mode Active:</strong> Thresholds and alarms are disabled. Only data collection is active.
+                </div>
+              </div>
+
+              <hr class="my-4">
+              <div class="config-section" id="config-thresholds-section">
                 <h6 class="config-section-title">Trigger thresholds</h6>
+                
+                <!-- Threshold Mode Selection (only visible in Detection mode) -->
+                <div id="threshold-mode-section" class="mb-4">
+                  <p class="text-muted small mb-3">Choose how thresholds are managed:</p>
+                  
+                  <!-- Mode Selection Cards -->
+                  <div class="threshold-mode-cards mb-4">
+                    <label class="threshold-mode-card active" data-mode="0">
+                      <input type="radio" name="config-threshold-mode" id="config-threshold-manual" value="0" checked>
+                      <span class="mode-icon">⚙️</span>
+                      <div class="mode-title">Manual</div>
+                      <div class="mode-desc">Full control over threshold values</div>
+                    </label>
+                    <label class="threshold-mode-card" data-mode="1">
+                      <input type="radio" name="config-threshold-mode" id="config-threshold-ai-suggest" value="1">
+                      <span class="mode-icon">💡</span>
+                      <div class="mode-title">AI Suggestion</div>
+                      <div class="mode-desc">Get smart recommendations</div>
+                    </label>
+                    <label class="threshold-mode-card" data-mode="2">
+                      <input type="radio" name="config-threshold-mode" id="config-threshold-fully-ai" value="2">
+                      <span class="mode-icon">🤖</span>
+                      <div class="mode-title">Fully AI</div>
+                      <div class="mode-desc">Autonomous optimization</div>
+                    </label>
+                  </div>
+                  
+                  <!-- AI Suggestions Panel -->
+                  <div id="ai-suggestions-panel" class="ai-panel d-none">
+                    <div class="ai-panel-header">
+                      <div class="ai-title">
+                        <div class="ai-icon">🧠</div>
+                        <span>AI Analysis</span>
+                      </div>
+                      <div id="ai-confidence-badge" class="confidence-pill">-- % confidence</div>
+                    </div>
+                    <div class="ai-panel-body">
+                      <div id="ai-suggestions-loading" class="ai-loading">
+                        <div class="spinner"></div>
+                        <div class="text">Training model on sensor data...</div>
+                      </div>
+                      <div id="ai-suggestions-content" class="d-none">
+                        <div class="ai-suggestion-grid">
+                          <div class="ai-suggestion-item">
+                            <span class="label">💨 Gas</span>
+                            <div class="values">
+                              <span id="ai-gas-current" class="current">-</span>
+                              <span class="arrow">▶</span>
+                              <span id="ai-gas-suggested" class="suggested">-</span>
+                            </div>
+                          </div>
+                          <div class="ai-suggestion-item">
+                            <span class="label">🌡️ Temp</span>
+                            <div class="values">
+                              <span id="ai-temp-current" class="current">-</span>
+                              <span class="arrow">▶</span>
+                              <span id="ai-temp-suggested" class="suggested">-</span>
+                            </div>
+                          </div>
+                          <div class="ai-suggestion-item">
+                            <span class="label">💧 Humidity Low</span>
+                            <div class="values">
+                              <span id="ai-hum-low-current" class="current">-</span>
+                              <span class="arrow">▶</span>
+                              <span id="ai-hum-low-suggested" class="suggested">-</span>
+                            </div>
+                          </div>
+                          <div class="ai-suggestion-item">
+                            <span class="label">💧 Humidity High</span>
+                            <div class="values">
+                              <span id="ai-hum-high-current" class="current">-</span>
+                              <span class="arrow">▶</span>
+                              <span id="ai-hum-high-suggested" class="suggested">-</span>
+                            </div>
+                          </div>
+                        </div>
+                        <div id="ai-reasoning" class="d-none"></div>
+                        <div class="ai-panel-footer">
+                          <div class="ai-model-info">
+                            <span class="pulse"></span>
+                            <span>Powered by trained AI model</span>
+                          </div>
+                          <button id="ai-apply-suggestions" class="btn-apply-ai">Apply Suggestions</button>
+                        </div>
+                      </div>
+                      <div id="ai-suggestions-error" class="d-none text-warning p-3"></div>
+                    </div>
+                    <div id="ai-data-points" class="d-none">-</div>
+                  </div>
+                  
+                  <!-- Fully AI Mode Panel -->
+                  <div id="fully-ai-info" class="fully-ai-panel d-none">
+                    <div class="panel-content">
+                      <div class="ai-status">
+                        <div class="status-icon">🤖</div>
+                        <div class="status-text">
+                          <h6>Autonomous AI Mode Active</h6>
+                          <p>Thresholds are continuously optimized by our AI engine</p>
+                        </div>
+                      </div>
+                      <div class="interval-selector">
+                        <div class="interval-label">
+                          <span class="icon">⏰</span>
+                          <span>Auto-optimization interval</span>
+                        </div>
+                        <select id="config-ai-update-interval">
+                          <option value="300">Every 5 min</option>
+                          <option value="900">Every 15 min</option>
+                          <option value="1800">Every 30 min</option>
+                          <option value="3600" selected>Every 1 hour</option>
+                          <option value="7200">Every 2 hours</option>
+                          <option value="14400">Every 4 hours</option>
+                          <option value="28800">Every 8 hours</option>
+                          <option value="43200">Every 12 hours</option>
+                          <option value="86400">Every 24 hours</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
                 <div class="row g-3 mb-3">
                   <div class="col-12 col-md-6">
                     <div class="form-check form-switch">
@@ -207,7 +354,7 @@
               </div>
 
               <hr class="my-4">
-              <div class="config-section">
+              <div class="config-section" id="config-alarms-section">
                 <h6 class="config-section-title">Alarm outputs (ESP)</h6>
                 <div class="form-check form-switch mb-2">
                   <input id="config-buzzer-enabled" class="form-check-input" type="checkbox">

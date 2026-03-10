@@ -19,6 +19,16 @@ CREATE TABLE IF NOT EXISTS devices (
 -- Per-device thresholds (one row per device_id)
 CREATE TABLE IF NOT EXISTS thresholds (
   device_id INT PRIMARY KEY,
+  
+  -- System mode: 0=train (data collection only), 1=detection (full alerts)
+  system_mode TINYINT NOT NULL DEFAULT 1 COMMENT '0=train mode, 1=detection mode',
+  
+  -- Threshold mode: 0=manual, 1=ai_suggestion, 2=fully_ai
+  threshold_mode TINYINT NOT NULL DEFAULT 0 COMMENT '0=manual, 1=ai_suggestion, 2=fully_ai',
+  
+  -- AI auto-update interval in seconds (only used in fully_ai mode)
+  ai_update_interval_sec INT NOT NULL DEFAULT 3600 COMMENT 'Auto-update interval for fully AI mode (default 1 hour)',
+  
   gas_threshold INT NOT NULL DEFAULT 400,
   gas_enabled TINYINT NOT NULL DEFAULT 1,
   temp_threshold DECIMAL(5,2) NOT NULL DEFAULT 60.00,

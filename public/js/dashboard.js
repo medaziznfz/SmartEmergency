@@ -20,8 +20,12 @@ export function initDashboard(socket, state) {
   const devicesEl = document.getElementById('dashboard-devices');
   const deviceSelect = document.getElementById('dashboard-device-select');
   const alarmBadge = document.getElementById('dashboard-alarm-badge');
+  const modeBadge = document.getElementById('dashboard-mode-badge');
   const predictionDisplay = new PredictionDisplay();
   const ctx = document.getElementById('dashboard-chart');
+
+  // Track current system mode for the selected device
+  let currentSystemMode = 1; // Default to detection mode
 
   const chart = new Chart(ctx, {
     type: 'line',
@@ -47,6 +51,18 @@ export function initDashboard(socket, state) {
 
   function getMeta(uid) {
     return state.deviceMeta.get(uid) || {};
+  }
+
+  function updateModeBadge(systemMode) {
+    if (!modeBadge) return;
+    
+    if (systemMode === 0) {
+      modeBadge.className = 'badge bg-warning fs-6';
+      modeBadge.textContent = 'Train Mode';
+    } else {
+      modeBadge.className = 'badge bg-success fs-6';
+      modeBadge.textContent = 'Detection Mode';
+    }
   }
 
   function renderDeviceCard(r) {
@@ -247,6 +263,12 @@ export function initDashboard(socket, state) {
     state.deviceState.set(r.uid, r);
     pushSeries(r.uid, r);
     
+    // Update system mode from reading payload
+    if (r.system_mode !== undefined) {
+      currentSystemMode = r.system_mode;
+      updateModeBadge(r.system_mode);
+    }
+    
     // Update prediction display if available
     if (r.prediction) {
       predictionDisplay.updatePrediction(r.uid, r.prediction);
@@ -267,10 +289,14 @@ export function initDashboard(socket, state) {
 
   setInterval(refreshCards, 5000);
 
+  // Initialize mode badge
+  updateModeBadge(currentSystemMode);
+
   return {
     refresh: refreshCards,
     rebuildSelect: rebuildDeviceSelect,
     updateChart: updateChartLive,
-    updateBadge: updateTopBadge
+    updateBadge: updateTopBadge,
+    updateModeBadge
   };
 }

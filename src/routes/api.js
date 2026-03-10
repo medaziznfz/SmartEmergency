@@ -17,7 +17,7 @@ export function makeApiRouter({ db }) {
 
   async function getOrCreateThresholds(deviceId) {
     const [rows] = await db.query(
-      `SELECT gas_threshold, gas_enabled, temp_threshold, temp_enabled, flame_enabled,
+      `SELECT system_mode, threshold_mode, ai_update_interval_sec, gas_threshold, gas_enabled, temp_threshold, temp_enabled, flame_enabled,
               humidity_low_threshold, humidity_high_threshold, humidity_enabled,
               buzzer_enabled, red_light_enabled, red_led_flash_speed_ms, config_pull_interval_sec, send_interval_sec, updated_at,
               gas_safe_baseline, temp_safe_baseline, humidity_safe_baseline
@@ -28,6 +28,9 @@ export function makeApiRouter({ db }) {
     if (rows.length) {
       const r = rows[0];
       return {
+        system_mode: r.system_mode ?? 1,
+        threshold_mode: r.threshold_mode ?? 0,
+        ai_update_interval_sec: r.ai_update_interval_sec ?? 3600,
         gas_threshold: r.gas_threshold,
         gas_enabled: r.gas_enabled ?? 1,
         temp_threshold: r.temp_threshold,
@@ -51,15 +54,18 @@ export function makeApiRouter({ db }) {
 
     await db.query(
       `INSERT INTO thresholds
-       (device_id, gas_threshold, gas_enabled, temp_threshold, temp_enabled, flame_enabled,
+       (device_id, system_mode, threshold_mode, ai_update_interval_sec, gas_threshold, gas_enabled, temp_threshold, temp_enabled, flame_enabled,
         humidity_low_threshold, humidity_high_threshold, humidity_enabled, buzzer_enabled, red_light_enabled, 
         red_led_flash_speed_ms, config_pull_interval_sec, send_interval_sec,
         gas_safe_baseline, temp_safe_baseline, humidity_safe_baseline)
-       VALUES (?, 400, 1, 60.00, 1, 1, 20.00, 80.00, 0, 1, 1, 200, 30, 1, 100, 25.00, 50.00)`,
+       VALUES (?, 1, 0, 3600, 400, 1, 60.00, 1, 1, 20.00, 80.00, 0, 1, 1, 200, 30, 1, 100, 25.00, 50.00)`,
       [deviceId]
     );
 
     return {
+      system_mode: 1,
+      threshold_mode: 0,
+      ai_update_interval_sec: 3600,
       gas_threshold: 400,
       gas_enabled: 1,
       temp_threshold: 60.0,
@@ -73,7 +79,7 @@ export function makeApiRouter({ db }) {
       red_led_flash_speed_ms: 200,
       config_pull_interval_sec: 30,
       send_interval_sec: 1,
-      gas_safe_baseline: 100, // 25% of 400
+      gas_safe_baseline: 100,
       temp_safe_baseline: 25.0,
       humidity_safe_baseline: 50.0,
       updated_at: new Date()
@@ -88,7 +94,7 @@ export function makeApiRouter({ db }) {
         ? `SELECT d.uid, d.label, d.last_ip, d.last_rssi, d.last_seen,
                  TIMESTAMPDIFF(SECOND, d.last_seen, NOW()) AS last_seen_age,
                  CASE WHEN d.last_seen IS NOT NULL AND TIMESTAMPDIFF(SECOND, d.last_seen, NOW()) <= ? THEN 1 ELSE 0 END AS is_online,
-                 t.gas_threshold, t.gas_enabled, t.temp_threshold, t.temp_enabled, t.flame_enabled,
+                 t.system_mode, t.gas_threshold, t.gas_enabled, t.temp_threshold, t.temp_enabled, t.flame_enabled,
                  t.humidity_low_threshold, t.humidity_high_threshold, t.humidity_enabled,
                  t.buzzer_enabled, t.red_light_enabled, t.config_pull_interval_sec, t.updated_at AS thresholds_updated_at
            FROM devices d
@@ -158,6 +164,9 @@ export function makeApiRouter({ db }) {
       ok: true,
       uid: dev.uid,
       label: dev.label,
+      system_mode: Number(th.system_mode),
+      threshold_mode: Number(th.threshold_mode),
+      ai_update_interval_sec: Number(th.ai_update_interval_sec),
       gas_threshold: Number(th.gas_threshold),
       gas_enabled: Number(th.gas_enabled),
       temp_threshold: Number(th.temp_threshold),
@@ -180,6 +189,9 @@ export function makeApiRouter({ db }) {
     const dev = await getDevice(req.params.uid);
     if (!dev) return res.status(404).json({ ok: false, error: 'Device not found' });
 
+    const systemMode = Number(req.body?.system_mode) === 0 ? 0 : 1; // 0=train, 1=detection
+    const thresholdMode = Math.min(2, Math.max(0, Number(req.body?.threshold_mode) || 0)); // 0=manual, 1=ai_suggestion, 2=fully_ai
+    const aiUpdateInterval = Math.min(86400, Math.max(300, Number(req.body?.ai_update_interval_sec) || 3600)); // 5min to 24h, default 1h
     const gas = Number(req.body?.gas_threshold);
     const temp = Number(req.body?.temp_threshold);
     const gasEnabled = Number(req.body?.gas_enabled) === 1 ? 1 : 0;
@@ -223,16 +235,135 @@ export function makeApiRouter({ db }) {
 
     await db.query(
       `UPDATE thresholds
-       SET gas_threshold=?, gas_enabled=?, temp_threshold=?, temp_enabled=?, flame_enabled=?,
+       SET system_mode=?, threshold_mode=?, ai_update_interval_sec=?, gas_threshold=?, gas_enabled=?, temp_threshold=?, temp_enabled=?, flame_enabled=?,
            humidity_low_threshold=?, humidity_high_threshold=?, humidity_enabled=?,
            buzzer_enabled=?, red_light_enabled=?, red_led_flash_speed_ms=?, 
            config_pull_interval_sec=?, send_interval_sec=?
        WHERE device_id=?`,
-      [gas, gasEnabled, temp, tempEnabled, flameEnabled, humLow, humHigh, humEnabled, 
+      [systemMode, thresholdMode, aiUpdateInterval, gas, gasEnabled, temp, tempEnabled, flameEnabled, humLow, humHigh, humEnabled, 
        buzzerEnabled, redLightEnabled, redLedFlashSpeed, pullInterval, sendInterval, dev.id]
     );
 
     res.json({ ok: true });
+  });
+
+  // AI Threshold Suggestions based on historical data
+  router.get('/devices/:uid/ai-suggestions', async (req, res) => {
+    const dev = await getDevice(req.params.uid);
+    if (!dev) return res.status(404).json({ ok: false, error: 'Device not found' });
+
+    const th = await getOrCreateThresholds(dev.id);
+
+    // Get historical readings (last 24 hours or last 1000 readings, whichever is more)
+    const [readings] = await db.query(
+      `SELECT temperature, humidity, gas, flame
+       FROM readings
+       WHERE device_id = ?
+       ORDER BY ts DESC
+       LIMIT 1000`,
+      [dev.id]
+    );
+
+    if (readings.length < 10) {
+      // Not enough data for AI suggestions
+      return res.json({
+        ok: true,
+        has_suggestions: false,
+        message: 'Not enough historical data (need at least 10 readings)',
+        data_points: readings.length,
+        current: {
+          gas_threshold: Number(th.gas_threshold),
+          temp_threshold: Number(th.temp_threshold),
+          humidity_low_threshold: Number(th.humidity_low_threshold),
+          humidity_high_threshold: Number(th.humidity_high_threshold)
+        },
+        suggested: null
+      });
+    }
+
+    // Calculate statistics from historical data
+    const gasValues = readings.map(r => Number(r.gas)).filter(v => !isNaN(v));
+    const tempValues = readings.map(r => Number(r.temperature)).filter(v => !isNaN(v));
+    const humValues = readings.map(r => Number(r.humidity)).filter(v => !isNaN(v));
+
+    // Calculate percentiles and statistics
+    const sortedGas = [...gasValues].sort((a, b) => a - b);
+    const sortedTemp = [...tempValues].sort((a, b) => a - b);
+    const sortedHum = [...humValues].sort((a, b) => a - b);
+
+    const percentile = (arr, p) => {
+      const idx = Math.ceil(arr.length * p / 100) - 1;
+      return arr[Math.max(0, idx)];
+    };
+
+    const avg = arr => arr.reduce((a, b) => a + b, 0) / arr.length;
+    const stdDev = arr => {
+      const mean = avg(arr);
+      return Math.sqrt(arr.reduce((sum, v) => sum + Math.pow(v - mean, 2), 0) / arr.length);
+    };
+
+    // AI Logic for suggestions:
+    // Gas: Use 95th percentile + 15% margin (to avoid false alarms but catch real issues)
+    const gas95 = percentile(sortedGas, 95);
+    const gasMax = Math.max(...gasValues);
+    const gasStd = stdDev(gasValues);
+    let suggestedGas = Math.round(gas95 + gasStd * 0.5); // 95th percentile + 0.5 std dev
+    suggestedGas = Math.min(1023, Math.max(50, suggestedGas)); // Clamp to valid range
+
+    // Temperature: Use 95th percentile + 5°C margin
+    const temp95 = percentile(sortedTemp, 95);
+    const tempMax = Math.max(...tempValues);
+    const tempStd = stdDev(tempValues);
+    let suggestedTemp = Math.round((temp95 + 5) * 10) / 10; // 95th percentile + 5°C
+    suggestedTemp = Math.min(120, Math.max(-10, suggestedTemp)); // Clamp to valid range
+
+    // Humidity: Use 5th percentile - 5% for low, 95th percentile + 5% for high
+    const hum5 = percentile(sortedHum, 5);
+    const hum95 = percentile(sortedHum, 95);
+    let suggestedHumLow = Math.round((hum5 - 5) * 10) / 10;
+    let suggestedHumHigh = Math.round((hum95 + 5) * 10) / 10;
+    suggestedHumLow = Math.min(100, Math.max(0, suggestedHumLow));
+    suggestedHumHigh = Math.min(100, Math.max(suggestedHumLow + 10, suggestedHumHigh));
+
+    // Calculate confidence based on data quality
+    const dataQuality = Math.min(100, Math.round(readings.length / 10)); // More data = higher confidence
+    const varianceScore = Math.max(0, 100 - Math.round(gasStd / 10)); // Lower variance = higher confidence
+    const confidence = Math.round((dataQuality + varianceScore) / 2);
+
+    // Generate reasoning for each suggestion
+    const reasoning = {
+      gas: `Based on ${readings.length} readings: max=${gasMax}, 95th percentile=${gas95.toFixed(0)}, std dev=${gasStd.toFixed(1)}. ` +
+           `Current threshold (${th.gas_threshold}) ${Number(th.gas_threshold) > suggestedGas ? 'could be lowered' : 'is appropriate'}.`,
+      temp: `Based on ${readings.length} readings: max=${tempMax.toFixed(1)}°C, 95th percentile=${temp95.toFixed(1)}°C. ` +
+            `Suggested with 5°C safety margin.`,
+      humidity: `Based on ${readings.length} readings: 5th percentile=${hum5.toFixed(1)}%, 95th percentile=${hum95.toFixed(1)}%. ` +
+                `Suggested with 5% safety margin on both ends.`
+    };
+
+    res.json({
+      ok: true,
+      has_suggestions: true,
+      data_points: readings.length,
+      confidence,
+      current: {
+        gas_threshold: Number(th.gas_threshold),
+        temp_threshold: Number(th.temp_threshold),
+        humidity_low_threshold: Number(th.humidity_low_threshold),
+        humidity_high_threshold: Number(th.humidity_high_threshold)
+      },
+      suggested: {
+        gas_threshold: suggestedGas,
+        temp_threshold: suggestedTemp,
+        humidity_low_threshold: suggestedHumLow,
+        humidity_high_threshold: suggestedHumHigh
+      },
+      stats: {
+        gas: { max: gasMax, p95: gas95, std: Math.round(gasStd * 10) / 10, avg: Math.round(avg(gasValues)) },
+        temp: { max: Math.round(tempMax * 10) / 10, p95: Math.round(temp95 * 10) / 10, avg: Math.round(avg(tempValues) * 10) / 10 },
+        humidity: { p5: Math.round(hum5 * 10) / 10, p95: Math.round(hum95 * 10) / 10, avg: Math.round(avg(humValues) * 10) / 10 }
+      },
+      reasoning
+    });
   });
 
   // Alarm history per device
@@ -354,4 +485,91 @@ export function makeApiRouter({ db }) {
   });
 
   return router;
+}
+
+// Background job: Auto-update thresholds for devices in Fully AI mode
+export async function runAIThresholdUpdates(db) {
+  try {
+    // Find devices in Fully AI mode (threshold_mode=2) that need updating
+    const [devices] = await db.query(
+      `SELECT d.id, d.uid, d.label, t.ai_update_interval_sec, t.updated_at,
+              t.gas_threshold, t.temp_threshold, t.humidity_low_threshold, t.humidity_high_threshold
+       FROM devices d
+       JOIN thresholds t ON t.device_id = d.id
+       WHERE t.threshold_mode = 2 
+         AND t.system_mode = 1
+         AND (t.updated_at IS NULL OR TIMESTAMPDIFF(SECOND, t.updated_at, NOW()) >= t.ai_update_interval_sec)`
+    );
+
+    if (devices.length === 0) return { updated: 0 };
+
+    let updatedCount = 0;
+
+    for (const device of devices) {
+      // Get historical readings for this device
+      const [readings] = await db.query(
+        `SELECT temperature, humidity, gas FROM readings WHERE device_id = ? ORDER BY ts DESC LIMIT 1000`,
+        [device.id]
+      );
+
+      if (readings.length < 10) continue; // Not enough data
+
+      // Calculate AI suggestions (same logic as the endpoint)
+      const gasValues = readings.map(r => Number(r.gas)).filter(v => !isNaN(v));
+      const tempValues = readings.map(r => Number(r.temperature)).filter(v => !isNaN(v));
+      const humValues = readings.map(r => Number(r.humidity)).filter(v => !isNaN(v));
+
+      const sortedGas = [...gasValues].sort((a, b) => a - b);
+      const sortedTemp = [...tempValues].sort((a, b) => a - b);
+      const sortedHum = [...humValues].sort((a, b) => a - b);
+
+      const percentile = (arr, p) => {
+        const idx = Math.ceil(arr.length * p / 100) - 1;
+        return arr[Math.max(0, idx)];
+      };
+      const stdDev = arr => {
+        const mean = arr.reduce((a, b) => a + b, 0) / arr.length;
+        return Math.sqrt(arr.reduce((sum, v) => sum + Math.pow(v - mean, 2), 0) / arr.length);
+      };
+
+      const gas95 = percentile(sortedGas, 95);
+      const gasStd = stdDev(gasValues);
+      let suggestedGas = Math.round(gas95 + gasStd * 0.5);
+      suggestedGas = Math.min(1023, Math.max(50, suggestedGas));
+
+      const temp95 = percentile(sortedTemp, 95);
+      let suggestedTemp = Math.round((temp95 + 5) * 10) / 10;
+      suggestedTemp = Math.min(120, Math.max(-10, suggestedTemp));
+
+      const hum5 = percentile(sortedHum, 5);
+      const hum95 = percentile(sortedHum, 95);
+      let suggestedHumLow = Math.round((hum5 - 5) * 10) / 10;
+      let suggestedHumHigh = Math.round((hum95 + 5) * 10) / 10;
+      suggestedHumLow = Math.min(100, Math.max(0, suggestedHumLow));
+      suggestedHumHigh = Math.min(100, Math.max(suggestedHumLow + 10, suggestedHumHigh));
+
+      // Only update if values changed significantly (>5% difference)
+      const gasChanged = Math.abs(suggestedGas - device.gas_threshold) / device.gas_threshold > 0.05;
+      const tempChanged = Math.abs(suggestedTemp - device.temp_threshold) / device.temp_threshold > 0.05;
+      const humLowChanged = Math.abs(suggestedHumLow - device.humidity_low_threshold) > 2;
+      const humHighChanged = Math.abs(suggestedHumHigh - device.humidity_high_threshold) > 2;
+
+      if (gasChanged || tempChanged || humLowChanged || humHighChanged) {
+        await db.query(
+          `UPDATE thresholds SET gas_threshold=?, temp_threshold=?, humidity_low_threshold=?, humidity_high_threshold=? WHERE device_id=?`,
+          [suggestedGas, suggestedTemp, suggestedHumLow, suggestedHumHigh, device.id]
+        );
+        updatedCount++;
+        console.log(`[AI Update] Device ${device.uid}: gas=${suggestedGas}, temp=${suggestedTemp}, humLow=${suggestedHumLow}, humHigh=${suggestedHumHigh}`);
+      } else {
+        // Touch updated_at to reset the interval timer
+        await db.query(`UPDATE thresholds SET updated_at=NOW() WHERE device_id=?`, [device.id]);
+      }
+    }
+
+    return { updated: updatedCount, checked: devices.length };
+  } catch (err) {
+    console.error('[AI Update] Error:', err);
+    return { error: err.message };
+  }
 }

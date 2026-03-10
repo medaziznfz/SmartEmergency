@@ -62,6 +62,7 @@ async function loadInitialData() {
       last_rssi: d.last_rssi,
       last_seen: d.last_seen,
       is_online: d.is_online,
+      system_mode: d.system_mode,
       gas_threshold: d.gas_threshold,
       gas_enabled: d.gas_enabled,
       temp_threshold: d.temp_threshold,
@@ -116,6 +117,12 @@ document.addEventListener('DOMContentLoaded', () => {
     if (uid) {
       dashboard.updateBadge(uid);
       dashboard.updateChart(uid);
+      
+      // Update mode badge based on first device's system mode
+      const meta = state.deviceMeta.get(uid);
+      if (meta && meta.system_mode !== undefined) {
+        dashboard.updateModeBadge(meta.system_mode);
+      }
     }
   });
 });
