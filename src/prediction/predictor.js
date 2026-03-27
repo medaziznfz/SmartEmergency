@@ -9,23 +9,23 @@ class PredictiveAlarmSystem {
     // Configuration for prediction sensitivity
     this.config = {
       // Minimum readings required for trend analysis
-      minReadingsForTrend: 5,
+      minReadingsForTrend: 3,
       // Maximum readings to analyze (sliding window)
       maxReadingsWindow: 30,
       // EWMA smoothing factor (0.1 = smooth, 0.5 = responsive)
       ewmaAlpha: 0.3,
       // Minimum rate of change to consider (per second) - reduces noise
       minRateThreshold: {
-        gas: 0.05,      // 0.05 units/sec = 3 units/min
-        temperature: 0.005, // 0.005°C/sec = 0.3°C/min
-        humidity: 0.01  // 0.01%/sec = 0.6%/min
+        gas: 0.02,      // 0.02 units/sec = 1.2 units/min
+        temperature: 0.002, // 0.002°C/sec = 0.12°C/min
+        humidity: 0.005  // 0.005%/sec = 0.3%/min
       },
-      // Trend consistency threshold (0-1, higher = stricter)
-      trendConsistencyThreshold: 0.6,
+      // Trend consistency threshold (0-1, lower = more permissive)
+      trendConsistencyThreshold: 0.4,
       // Maximum prediction window (seconds)
       maxPredictionWindow: 3600, // 1 hour
-      // Minimum prediction window to show (seconds)
-      minPredictionWindow: 10
+      // Minimum prediction window to show (seconds) - 0 allows immediate alarm
+      minPredictionWindow: 0
     };
   }
 
@@ -40,7 +40,29 @@ class PredictiveAlarmSystem {
 
     // Get current state with position information
     const currentState = this.getCurrentState(currentReading, thresholds);
-    
+
+    // Short-circuit: if any sensor is already at/past threshold, alarm is NOW (0s)
+    const alarmNow = (
+      (currentState.gas.enabled && currentState.gas.status === 'ALARM') ||
+      (currentState.temperature.enabled && currentState.temperature.status === 'ALARM') ||
+      (currentState.humidity.enabled && currentState.humidity.status === 'ALARM') ||
+      (currentState.flame.enabled && currentState.flame.status === 'DETECTED')
+    );
+    if (alarmNow) {
+      const maxPos = this.calculateMaxPosition(currentState);
+      return {
+        timestamp: new Date().toISOString(),
+        riskLevel: 'CRITICAL',
+        probabilities: this.calculateProbabilitiesFromPosition(currentState),
+        timeToAlarm: 0,
+        sensorPredictions: {},
+        trendAnalysis: { hasValidTrends: false },
+        analysis: currentState,
+        confidence: 1,
+        recommendations: this.generateRecommendations('CRITICAL', currentState, 0, {})
+      };
+    }
+
     // Calculate overall position (how close to ANY threshold)
     const maxPosition = this.calculateMaxPosition(currentState);
     
@@ -54,7 +76,15 @@ class PredictiveAlarmSystem {
     const sensorPredictions = this.calculateSensorPredictions(currentState, trendAnalysis);
     
     // Get the most critical time to alarm
-    const timeToAlarm = this.getMostCriticalTimeToAlarm(sensorPredictions);
+    let timeToAlarm = this.getMostCriticalTimeToAlarm(sensorPredictions);
+
+    // When very close to threshold, cap the displayed time to reflect real urgency.
+    // position 0.9 → max 30s, 0.95 → max 10s, 0.99 → max 2s
+    if (timeToAlarm !== null && maxPosition >= 0.9) {
+      const remainingFraction = 1 - maxPosition;        // e.g. 0.1 at 90%
+      const maxAllowed = Math.round(remainingFraction * 300); // scale: 0.1 * 300 = 30s
+      timeToAlarm = Math.min(timeToAlarm, Math.max(1, maxAllowed));
+    }
     
     // Probability is the same as position (closer = higher %)
     const probabilities = this.calculateProbabilitiesFromPosition(currentState);
@@ -533,29 +563,51 @@ class PredictiveAlarmSystem {
   }
 
   /**
-   * Calculate per-sensor predictions with time to alarm
+   * Calculate per-sensor predictions with time to alarm.
+   * Falls back to a simple 2-point rate estimate when trend analysis
+   * is invalid but the sensor is already close to the threshold (position >= 0.5).
    */
   calculateSensorPredictions(currentState, trendAnalysis) {
     const predictions = {};
 
     // Gas prediction
-    if (currentState.gas.enabled && trendAnalysis.gas?.isValid) {
-      predictions.gas = this.calculateSensorTimeToAlarm(
-        currentState.gas.current,
-        currentState.gas.threshold,
-        currentState.gas.safeBaseline,
-        trendAnalysis.gas
-      );
+    if (currentState.gas.enabled) {
+      if (trendAnalysis.gas?.isValid) {
+        predictions.gas = this.calculateSensorTimeToAlarm(
+          currentState.gas.current,
+          currentState.gas.threshold,
+          currentState.gas.safeBaseline,
+          trendAnalysis.gas
+        );
+      }
+      // Fallback: use raw slope from trend even if consistency check failed,
+      // as long as we're close to threshold and the sensor is rising
+      if (!predictions.gas && currentState.gas.position >= 0.5 && trendAnalysis.gas?.slope > 0) {
+        predictions.gas = this._fallbackTimeToAlarm(
+          currentState.gas.current,
+          currentState.gas.threshold,
+          trendAnalysis.gas
+        );
+      }
     }
 
     // Temperature prediction
-    if (currentState.temperature.enabled && trendAnalysis.temperature?.isValid) {
-      predictions.temperature = this.calculateSensorTimeToAlarm(
-        currentState.temperature.current,
-        currentState.temperature.threshold,
-        currentState.temperature.safeBaseline,
-        trendAnalysis.temperature
-      );
+    if (currentState.temperature.enabled) {
+      if (trendAnalysis.temperature?.isValid) {
+        predictions.temperature = this.calculateSensorTimeToAlarm(
+          currentState.temperature.current,
+          currentState.temperature.threshold,
+          currentState.temperature.safeBaseline,
+          trendAnalysis.temperature
+        );
+      }
+      if (!predictions.temperature && currentState.temperature.position >= 0.5 && trendAnalysis.temperature?.slope > 0) {
+        predictions.temperature = this._fallbackTimeToAlarm(
+          currentState.temperature.current,
+          currentState.temperature.threshold,
+          trendAnalysis.temperature
+        );
+      }
     }
 
     // Humidity prediction
@@ -572,6 +624,27 @@ class PredictiveAlarmSystem {
     }
 
     return predictions;
+  }
+
+  /**
+   * Fallback time-to-alarm using raw slope when trend consistency check failed
+   * but sensor is already close to threshold. Lower confidence.
+   */
+  _fallbackTimeToAlarm(current, threshold, trend) {
+    const distance = threshold - current;
+    if (distance <= 0) return { timeSeconds: 0, confidence: 0.5, method: 'fallback' };
+    if (!trend || trend.slope <= 0) return null;
+
+    const timeSeconds = Math.round(distance / trend.slope);
+    if (timeSeconds > this.config.maxPredictionWindow) return null;
+
+    return {
+      timeSeconds,
+      confidence: 0.4, // lower confidence since trend wasn't fully consistent
+      ratePerMinute: trend.ratePerMinute,
+      isAccelerating: trend.isAccelerating || false,
+      method: 'fallback'
+    };
   }
 
   /**
@@ -615,7 +688,7 @@ class PredictiveAlarmSystem {
     }
 
     // Validate prediction window
-    if (timeSeconds < this.config.minPredictionWindow || timeSeconds > this.config.maxPredictionWindow) {
+    if (timeSeconds > this.config.maxPredictionWindow) {
       return null;
     }
 
@@ -655,7 +728,7 @@ class PredictiveAlarmSystem {
 
     const timeSeconds = distance / rate;
 
-    if (timeSeconds < this.config.minPredictionWindow || timeSeconds > this.config.maxPredictionWindow) {
+    if (timeSeconds > this.config.maxPredictionWindow) {
       return null;
     }
 
@@ -678,8 +751,8 @@ class PredictiveAlarmSystem {
 
     for (const [sensor, prediction] of Object.entries(sensorPredictions)) {
       if (prediction && prediction.timeSeconds !== null) {
-        // Only consider predictions with reasonable confidence
-        if (prediction.confidence >= 0.5) {
+        // Accept predictions with any reasonable confidence
+        if (prediction.confidence >= 0.3) {
           if (minTime === null || prediction.timeSeconds < minTime) {
             minTime = prediction.timeSeconds;
           }

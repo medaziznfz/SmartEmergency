@@ -15,6 +15,86 @@ class PredictionDisplay {
 
     // Keep last known alarm ETA while risk remains present.
     this.lastEtaByUid = new Map();
+
+    // Countdown state: { eta, riskLevel, overallProb, lastUpdated }
+    this._countdownState = new Map();
+    // Single shared interval for all devices
+    this._countdownInterval = null;
+    this._startCountdownLoop();
+  }
+
+  /**
+   * Start a 1-second interval that ticks down all active countdowns
+   */
+  _startCountdownLoop() {
+    this._countdownInterval = setInterval(() => {
+      const now = Date.now();
+      for (const [uid, state] of this._countdownState.entries()) {
+        if (state.eta === null || state.eta === undefined) continue;
+
+        // How many seconds have elapsed since last backend update?
+        const elapsed = Math.floor((now - state.lastUpdated) / 1000);
+        const remaining = Math.max(0, state.eta - elapsed);
+
+        // Update the time display with the ticking value
+        this._renderCountdown(uid, remaining, state.overallProb, state.riskLevel);
+
+        // Fire alarm UI at 0
+        if (remaining === 0 && !state.alarmFired) {
+          state.alarmFired = true;
+          this._triggerAlarmUI(uid);
+        }
+      }
+    }, 1000);
+  }
+
+  /**
+   * Render the countdown value into the time-to-alarm element
+   */
+  _renderCountdown(uid, seconds, overallProb, riskLevel) {
+    const timeEl = document.getElementById(`time-to-alarm-${uid}`);
+    if (!timeEl) return;
+
+    const formattedTime = this.formatTimeToAlarm(seconds);
+    const urgencyClass = this.getTimeUrgencyClass(seconds);
+    const icon = this.getTimeIcon(seconds);
+
+    timeEl.innerHTML = `
+      <div class="d-flex align-items-center justify-content-between">
+        <span class="time-label small ${urgencyClass}">${icon} Time to alarm:</span>
+        <span class="time-value small fw-bold ${urgencyClass}">${formattedTime}</span>
+      </div>
+    `;
+  }
+
+  /**
+   * Trigger alarm UI when countdown hits 0
+   */
+  _triggerAlarmUI(uid) {
+    const timeEl = document.getElementById(`time-to-alarm-${uid}`);
+    if (timeEl) {
+      timeEl.innerHTML = `
+        <div class="d-flex align-items-center justify-content-between">
+          <span class="time-label small text-danger fw-bold blink">🚨 Time to alarm:</span>
+          <span class="time-value small fw-bold text-danger blink">NOW!</span>
+        </div>
+      `;
+    }
+
+    // Flash the device card
+    const card = document.querySelector(`[data-device-uid="${uid}"]`);
+    if (card && !card.classList.contains('alarm-on')) {
+      card.classList.add('alarm-on', 'alarm-blinking');
+    }
+
+    // Update risk badge to CRITICAL
+    const badge = document.getElementById(`risk-badge-${uid}`);
+    if (badge) {
+      badge.textContent = 'CRITICAL';
+      badge.className = 'risk-badge badge small risk-CRITICAL';
+    }
+
+    this.pulseHighRisk(uid);
   }
 
   /**
@@ -166,19 +246,18 @@ class PredictionDisplay {
   }
 
   /**
-   * Update time to alarm display with enhanced formatting
+   * Update time to alarm display — stores state for the countdown ticker
    */
   updateTimeToAlarm(uid, timeToAlarm, overallProb = 0, riskLevel = 'MINIMAL') {
     const timeEl = document.getElementById(`time-to-alarm-${uid}`);
     if (!timeEl) return;
-    
+
     const riskStillPresent = (Number(overallProb) || 0) >= 0.3 && riskLevel !== 'MINIMAL';
 
     // If backend provided a value, always store it.
     if (timeToAlarm !== null && timeToAlarm !== undefined) {
       this.lastEtaByUid.set(uid, Number(timeToAlarm));
     } else if (!riskStillPresent) {
-      // Risk is gone → clear any previous ETA.
       this.lastEtaByUid.delete(uid);
     }
 
@@ -187,48 +266,51 @@ class PredictionDisplay {
       : (riskStillPresent ? this.lastEtaByUid.get(uid) : null);
 
     if (effectiveEta === null || effectiveEta === undefined || Number.isNaN(effectiveEta)) {
+      // No ETA — clear countdown state
+      this._countdownState.delete(uid);
       timeEl.innerHTML = '<span class="time-label small text-muted">Time to alarm: --</span>';
       return;
     }
 
-    // Format time with appropriate detail level
-    const formattedTime = this.formatTimeToAlarm(effectiveEta);
-    const urgencyClass = this.getTimeUrgencyClass(effectiveEta);
-    const icon = this.getTimeIcon(effectiveEta);
-    
-    timeEl.innerHTML = `
-      <div class="d-flex align-items-center justify-content-between">
-        <span class="time-label small ${urgencyClass}">${icon} Time to alarm:</span>
-        <span class="time-value small fw-bold ${urgencyClass}">${formattedTime}</span>
-      </div>
-    `;
+    // Store/reset countdown state anchored to now
+    const existing = this._countdownState.get(uid);
+    const alreadyFired = existing?.alarmFired && effectiveEta === 0;
+
+    this._countdownState.set(uid, {
+      eta: effectiveEta,
+      riskLevel,
+      overallProb,
+      lastUpdated: Date.now(),
+      alarmFired: alreadyFired || effectiveEta === 0
+    });
+
+    // Immediately render the current value (ticker will take over from here)
+    this._renderCountdown(uid, effectiveEta, overallProb, riskLevel);
+
+    if (effectiveEta === 0 && !alreadyFired) {
+      this._triggerAlarmUI(uid);
+    }
   }
 
   /**
-   * Format time to alarm - always show in seconds for countdown effect
+   * Format time to alarm.
+   * Under 120s → always show raw seconds so the countdown is visible (e.g. 10s, 9s … 0s).
+   * Above that → show a human-friendly estimate.
    */
   formatTimeToAlarm(seconds) {
     if (seconds <= 0) {
       return 'NOW!';
-    } else if (seconds < 60) {
-      // Show exact seconds for countdown
+    } else if (seconds <= 120) {
+      // Always show exact seconds for the final 2 minutes
       return `${seconds}s`;
-    } else if (seconds < 120) {
-      // Show "1m Xs" format for 1-2 minutes
-      const minutes = Math.floor(seconds / 60);
-      const remainingSeconds = seconds % 60;
-      return `${minutes}m ${remainingSeconds}s`;
     } else if (seconds < 600) {
-      // Show minutes and seconds for under 10 minutes
       const minutes = Math.floor(seconds / 60);
       const remainingSeconds = seconds % 60;
       return `${minutes}m ${remainingSeconds}s`;
     } else if (seconds < 3600) {
-      // Show just minutes for 10-60 minutes
       const minutes = Math.round(seconds / 60);
       return `~${minutes} min`;
     } else {
-      // Show hours for longer times
       const hours = Math.floor(seconds / 3600);
       const minutes = Math.floor((seconds % 3600) / 60);
       if (minutes > 0 && hours < 3) {
@@ -317,6 +399,9 @@ class PredictionDisplay {
    * Clear prediction display
    */
   clearPrediction(uid) {
+    // Stop countdown for this device
+    this._countdownState.delete(uid);
+    this.lastEtaByUid.delete(uid);
     const elements = [
       `confidence-${uid}`,
       `risk-badge-${uid}`,

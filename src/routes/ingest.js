@@ -443,8 +443,8 @@ export function makeIngestRouter({ db, io }) {
       ts: Date.now()
     });
 
-    // Keep only last 10 readings for prediction (enough for rate calculation)
-    if (history.length > 10) {
+    // Keep only last 30 readings for prediction (better trend analysis)
+    if (history.length > 30) {
       history.shift();
     }
 
